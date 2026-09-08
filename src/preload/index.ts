@@ -27,6 +27,18 @@ type StorageSummary = {
   } | null
 }
 
+type HibernatedTabRecord = {
+  id: number
+  browser_tab_id: string
+  url: string
+  title: string
+  text: string
+  reason: string
+  origin_batch_id: string | null
+  restored_at: string | null
+  created_at: string
+}
+
 contextBridge.exposeInMainWorld('velox', {
   getBackendConfig: () => ipcRenderer.invoke('backend:get-config') as Promise<{ baseUrl: string }>,
   tabs: {
@@ -40,6 +52,7 @@ contextBridge.exposeInMainWorld('velox', {
     forward: () => ipcRenderer.invoke('tabs:forward') as Promise<void>,
     reload: () => ipcRenderer.invoke('tabs:reload') as Promise<void>,
     stop: () => ipcRenderer.invoke('tabs:stop') as Promise<void>,
+    hibernate: (tabId: string, reason?: string) => ipcRenderer.invoke('tabs:hibernate', { tabId, reason }) as Promise<Record<string, unknown>>,
     onStateChange: (callback: (state: { tabs: BrowserTabState[]; activeTabId: string | null }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, state: { tabs: BrowserTabState[]; activeTabId: string | null }) => callback(state)
       ipcRenderer.on('tabs:state', listener)
@@ -49,6 +62,8 @@ contextBridge.exposeInMainWorld('velox', {
   storage: {
     syncTabs: (payload: { tabs: TabSnapshot[]; activeTabId: string | null }) => ipcRenderer.invoke('storage:sync-tabs', payload) as Promise<{ batch_id: string; captured_at: string; tab_count: number }>,
     getSummary: () => ipcRenderer.invoke('storage:get-summary') as Promise<StorageSummary>,
+    listHibernated: (limit?: number) => ipcRenderer.invoke('storage:list-hibernated', limit) as Promise<HibernatedTabRecord[]>,
+    restoreHibernated: (recordId: number) => ipcRenderer.invoke('storage:restore-hibernated', recordId) as Promise<HibernatedTabRecord>,
     hibernateTab: (payload: { tab: TabSnapshot; reason: string; originBatchId?: string | null }) => ipcRenderer.invoke('storage:hibernate-tab', payload) as Promise<Record<string, unknown>>
   }
 })

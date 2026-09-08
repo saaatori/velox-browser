@@ -177,6 +177,49 @@ def save_hibernated_tab(
     return {"id": cursor.lastrowid, "created_at": created_at}
 
 
+def list_hibernated_tabs(limit: int = 20) -> list[dict[str, Any]]:
+    connection = get_connection()
+    with _lock:
+        rows = connection.execute(
+            """
+            SELECT id, browser_tab_id, url, title, text, reason, origin_batch_id, restored_at, created_at
+            FROM hibernated_tabs
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def restore_hibernated_tab(record_id: int) -> dict[str, Any] | None:
+    restored_at = now_iso()
+    connection = get_connection()
+    with _lock:
+        row = connection.execute(
+            """
+            SELECT id, browser_tab_id, url, title, text, reason, origin_batch_id, restored_at, created_at
+            FROM hibernated_tabs
+            WHERE id = ?
+            """,
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        connection.execute(
+            """
+            UPDATE hibernated_tabs
+            SET restored_at = ?
+            WHERE id = ? AND restored_at IS NULL
+            """,
+            (restored_at, record_id),
+        )
+        connection.commit()
+    payload = dict(row)
+    payload["restored_at"] = restored_at
+    return payload
+
+
 def list_summary() -> dict[str, Any]:
     connection = get_connection()
     with _lock:

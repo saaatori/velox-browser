@@ -7,7 +7,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from backend.app.storage import list_summary, save_hibernated_tab, save_organize_run, save_tab_snapshot
+from backend.app.storage import (
+    list_hibernated_tabs,
+    list_summary,
+    restore_hibernated_tab,
+    save_hibernated_tab,
+    save_organize_run,
+    save_tab_snapshot,
+)
 
 app = FastAPI(title="Velox AI Backend", version="0.1.0", description="Local AI services for Velox Browser.")
 app.add_middleware(
@@ -61,6 +68,18 @@ class HibernatedTabRequest(BaseModel):
     tab: TabSnapshot
     reason: str = "manual"
     origin_batch_id: str | None = None
+
+
+class HibernatedTabRecord(BaseModel):
+    id: int
+    browser_tab_id: str
+    url: str
+    title: str
+    text: str
+    reason: str
+    origin_batch_id: str | None
+    restored_at: str | None
+    created_at: str
 
 
 GROUP_RULES = (
@@ -178,6 +197,19 @@ async def sync_tab_snapshot(request: TabSnapshotSyncRequest) -> SnapshotSyncResp
 async def hibernate_tab(request: HibernatedTabRequest) -> dict[str, str | int | None]:
     result = save_hibernated_tab(request.tab.model_dump(), request.reason, request.origin_batch_id)
     return {"status": "ok", **result}
+
+
+@app.get("/api/storage/hibernated", response_model=list[HibernatedTabRecord])
+async def list_hibernated(limit: int = 20) -> list[HibernatedTabRecord]:
+    return [HibernatedTabRecord(**record) for record in list_hibernated_tabs(limit)]
+
+
+@app.post("/api/storage/hibernated/{record_id}/restore", response_model=HibernatedTabRecord)
+async def restore_hibernated(record_id: int) -> HibernatedTabRecord:
+    record = restore_hibernated_tab(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Hibernated tab not found")
+    return HibernatedTabRecord(**record)
 
 
 @app.get("/api/storage/summary")

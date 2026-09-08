@@ -27,6 +27,18 @@ type StorageSummary = {
   } | null
 }
 
+type HibernatedTabRecord = {
+  id: number
+  browser_tab_id: string
+  url: string
+  title: string
+  text: string
+  reason: string
+  origin_batch_id: string | null
+  restored_at: string | null
+  created_at: string
+}
+
 interface Window {
   velox: {
     getBackendConfig: () => Promise<{ baseUrl: string }>
@@ -41,11 +53,14 @@ interface Window {
       forward: () => Promise<void>
       reload: () => Promise<void>
       stop: () => Promise<void>
+      hibernate: (tabId: string, reason?: string) => Promise<Record<string, unknown>>
       onStateChange: (callback: (state: { tabs: BrowserTabState[]; activeTabId: string | null }) => void) => () => void
     }
     storage: {
       syncTabs: (payload: { tabs: TabSnapshot[]; activeTabId: string | null }) => Promise<{ batch_id: string; captured_at: string; tab_count: number }>
       getSummary: () => Promise<StorageSummary>
+      listHibernated: (limit?: number) => Promise<HibernatedTabRecord[]>
+      restoreHibernated: (recordId: number) => Promise<HibernatedTabRecord>
       hibernateTab: (payload: { tab: TabSnapshot; reason: string; originBatchId?: string | null }) => Promise<Record<string, unknown>>
     }
   }

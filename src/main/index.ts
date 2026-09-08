@@ -379,6 +379,24 @@ app.whenReady().then(async () => {
     }
     return response.json() as Promise<Record<string, unknown>>
   })
+  ipcMain.handle('storage:list-hibernated', async (_event, limit: number = 20) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/hibernated?limit=${encodeURIComponent(String(limit))}`)
+    if (!response.ok) {
+      throw new Error(`Failed to load hibernated tabs: ${response.status}`)
+    }
+    return response.json() as Promise<Array<Record<string, unknown>>>
+  })
+  ipcMain.handle('storage:restore-hibernated', async (_event, recordId: number) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/hibernated/${recordId}/restore`, {
+      method: 'POST'
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to restore hibernated tab: ${response.status}`)
+    }
+    const record = await response.json() as { url?: string }
+    if (record.url) createTab(record.url)
+    return record
+  })
   ipcMain.handle('tabs:create', (_event, url?: string) => getTabState(createTab(normalizeNavigationInput(url ?? START_PAGE_URL))))
   ipcMain.handle('tabs:activate', (_event, tabId: string) => activateTab(tabId))
   ipcMain.handle('tabs:close', (_event, tabId: string) => closeTab(tabId))
@@ -398,6 +416,34 @@ app.whenReady().then(async () => {
   ipcMain.handle('tabs:stop', () => {
     const tab = activeTabId ? findTab(activeTabId) : undefined
     if (tab?.view) tab.view.webContents.stop()
+  })
+  ipcMain.handle('tabs:hibernate', async (_event, payload: { tabId: string; reason?: string }) => {
+    const tab = findTab(payload.tabId)
+    if (!tab) {
+      throw new Error(`Tab not found: ${payload.tabId}`)
+    }
+    if (tab.isStartPage) {
+      closeTab(tab.id)
+      return { status: 'ignored' }
+    }
+    const snapshot = (await getTabSnapshots()).find((item) => item.id === payload.tabId)
+    if (!snapshot) {
+      throw new Error(`Unable to capture snapshot for tab: ${payload.tabId}`)
+    }
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/tabs/hibernate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tab: snapshot,
+        reason: payload.reason ?? 'manual',
+        origin_batch_id: null
+      })
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to hibernate tab: ${response.status}`)
+    }
+    closeTab(tab.id)
+    return response.json() as Promise<Record<string, unknown>>
   })
   createWindow()
   createTab()

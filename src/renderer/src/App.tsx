@@ -42,6 +42,18 @@ type StorageSummary = {
   } | null
 }
 
+type HibernatedTabRecord = {
+  id: number
+  browser_tab_id: string
+  url: string
+  title: string
+  text: string
+  reason: string
+  origin_batch_id: string | null
+  restored_at: string | null
+  created_at: string
+}
+
 function App() {
   const [backendState, setBackendState] = useState<BackendState>('checking')
   const [backendUrl, setBackendUrl] = useState('')
@@ -54,6 +66,9 @@ function App() {
   const [organizeError, setOrganizeError] = useState('')
   const [organizeResult, setOrganizeResult] = useState<OrganizeResult | null>(null)
   const [storageSummary, setStorageSummary] = useState<StorageSummary | null>(null)
+  const [hibernatedTabs, setHibernatedTabs] = useState<HibernatedTabRecord[]>([])
+  const [hibernatingTabId, setHibernatingTabId] = useState<string | null>(null)
+  const [storageBusy, setStorageBusy] = useState(false)
   const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId), [tabs, activeTabId])
 
   useEffect(() => {
@@ -111,8 +126,14 @@ function App() {
     let cancelled = false
     async function loadSummary() {
       try {
-        const summary = await window.velox.storage.getSummary()
-        if (!cancelled) setStorageSummary(summary)
+        const [summary, hibernated] = await Promise.all([
+          window.velox.storage.getSummary(),
+          window.velox.storage.listHibernated(8)
+        ])
+        if (!cancelled) {
+          setStorageSummary(summary)
+          setHibernatedTabs(hibernated)
+        }
       } catch {
         if (!cancelled) setStorageSummary(null)
       }
@@ -191,10 +212,48 @@ function App() {
       const result = await response.json() as OrganizeResult
       setOrganizeResult(result)
       await window.velox.storage.syncTabs({ tabs: snapshots, activeTabId })
+      const [summary, hibernated] = await Promise.all([
+        window.velox.storage.getSummary(),
+        window.velox.storage.listHibernated(8)
+      ])
+      setStorageSummary(summary)
+      setHibernatedTabs(hibernated)
     } catch (error) {
       setOrganizeError(error instanceof Error ? error.message : '标签整理失败')
     } finally {
       setOrganizeLoading(false)
+    }
+  }
+
+  async function hibernateActiveTab(tabId: string) {
+    setHibernatingTabId(tabId)
+    setStorageBusy(true)
+    try {
+      await window.velox.tabs.hibernate(tabId, 'manual')
+      const [summary, hibernated] = await Promise.all([
+        window.velox.storage.getSummary(),
+        window.velox.storage.listHibernated(8)
+      ])
+      setStorageSummary(summary)
+      setHibernatedTabs(hibernated)
+    } finally {
+      setHibernatingTabId(null)
+      setStorageBusy(false)
+    }
+  }
+
+  async function restoreHibernated(recordId: number) {
+    setStorageBusy(true)
+    try {
+      await window.velox.storage.restoreHibernated(recordId)
+      const [summary, hibernated] = await Promise.all([
+        window.velox.storage.getSummary(),
+        window.velox.storage.listHibernated(8)
+      ])
+      setStorageSummary(summary)
+      setHibernatedTabs(hibernated)
+    } finally {
+      setStorageBusy(false)
     }
   }
 
@@ -262,7 +321,16 @@ function App() {
                   </div>
                 ))}
                 {organizeResult.suggested_hibernating.length > 0 && (
-                  <p className="hibernate-note">建议稍后处理 {organizeResult.suggested_hibernating.length} 个后台标签</p>
+                  <div className="hibernate-note">
+                    <span>建议稍后处理 {organizeResult.suggested_hibernating.length} 个后台标签</span>
+                    <div className="hibernate-actions">
+                      {organizeResult.suggested_hibernating.slice(0, 3).map((tabId) => (
+                        <button key={tabId} type="button" onClick={() => void hibernateActiveTab(tabId)} disabled={storageBusy || hibernatingTabId === tabId}>
+                          {hibernatingTabId === tabId ? '处理中...' : `休眠 ${tabId}`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
             )}
@@ -271,6 +339,17 @@ function App() {
                 <span>快照 {storageSummary.snapshot_count}</span>
                 <span>整理 {storageSummary.organize_count}</span>
                 <span>休眠 {storageSummary.hibernated_count}</span>
+              </div>
+            )}
+            {hibernatedTabs.length > 0 && (
+              <div className="hibernated-list">
+                <div className="hibernated-heading">最近休眠</div>
+                {hibernatedTabs.map((item) => (
+                  <button className="hibernated-item" type="button" key={item.id} disabled={storageBusy} onClick={() => void restoreHibernated(item.id)}>
+                    <strong>{item.title || item.url}</strong>
+                    <span>{item.reason} · 恢复</span>
+                  </button>
+                ))}
               </div>
             )}
           </section>
