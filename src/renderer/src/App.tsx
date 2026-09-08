@@ -85,6 +85,15 @@ type WorkspaceRecord = {
   }>
   duplicate_sets?: string[][]
   suggested_hibernating?: string[]
+  tabs?: Array<{
+    id: string
+    url: string
+    title: string
+    text: string
+    is_start_page: boolean
+    group_name?: string | null
+  }>
+  active_tab_id?: string | null
 }
 
 function App() {
@@ -120,6 +129,16 @@ function App() {
       }
     })
   }, [activeTabId, organizeResult, tabs])
+  const tabGroups = useMemo(() => {
+    const groups = new Map<string, BrowserTabState[]>()
+    for (const tab of tabs) {
+      const name = tab.groupName || '未分组'
+      const group = groups.get(name) ?? []
+      group.push(tab)
+      groups.set(name, group)
+    }
+    return Array.from(groups.entries())
+  }, [tabs])
 
   const refreshStorageState = useCallback(async () => {
     const [summary, hibernated, closed, workspaces] = await Promise.all([
@@ -284,7 +303,23 @@ function App() {
     setWorkspaceSaving(true)
     try {
       const name = workspaceName.trim() || organizeResult.groups[0]?.name || '工作区快照'
-      await window.velox.storage.saveWorkspace({ name, snapshot: organizeResult })
+      const snapshots = await window.velox.tabs.getSnapshots()
+      const groupByTabId = new Map(
+        organizeResult.groups.flatMap((group) => group.tabs.map((tabId) => [tabId, group.name] as const))
+      )
+      await window.velox.storage.saveWorkspace({
+        name,
+        snapshot: organizeResult,
+        tabs: snapshots.map((tab) => ({
+          id: tab.id,
+          url: tab.url,
+          title: tab.title,
+          text: tab.text,
+          is_start_page: tab.isStartPage,
+          group_name: groupByTabId.get(tab.id) ?? null
+        })),
+        activeTabId
+      })
       setWorkspaceName(name)
       await refreshStorageState()
     } finally {
@@ -303,6 +338,12 @@ function App() {
         suggested_hibernating: workspace.suggested_hibernating ?? [],
         strategy: workspace.strategy
       })
+      if (workspace.tabs?.length) {
+        await window.velox.tabs.restoreWorkspace({
+          tabs: workspace.tabs,
+          activeTabId: workspace.active_tab_id ?? null
+        })
+      }
       setWorkspaceName(workspace.name)
       setOrganizeOpen(true)
       await refreshStorageState()
@@ -375,15 +416,20 @@ function App() {
             </button>
           </div>
           <div className="tab-list">
-            {tabs.map((tab) => (
-              <div className={`tab-item ${tab.id === activeTabId ? 'active' : ''}`} key={tab.id}>
-                <button className="tab-select" type="button" onClick={() => void window.velox.tabs.activate(tab.id)}>
-                  <Globe2 size={16} />
-                  <span>{tabLabel(tab)}</span>
-                </button>
-                <button className="tab-close" type="button" aria-label={`关闭${tabLabel(tab)}`} title="关闭标签页" onClick={() => void window.velox.tabs.close(tab.id)}>
-                  <X size={14} />
-                </button>
+            {tabGroups.map(([groupName, groupTabs]) => (
+              <div className="tab-group" key={groupName}>
+                {tabGroups.length > 1 && <div className="tab-group-label">{groupName}</div>}
+                {groupTabs.map((tab) => (
+                  <div className={`tab-item ${tab.id === activeTabId ? 'active' : ''}`} key={tab.id}>
+                    <button className="tab-select" type="button" onClick={() => void window.velox.tabs.activate(tab.id)}>
+                      <Globe2 size={16} />
+                      <span>{tabLabel(tab)}</span>
+                    </button>
+                    <button className="tab-close" type="button" aria-label={`关闭${tabLabel(tab)}`} title="关闭标签页" onClick={() => void window.velox.tabs.close(tab.id)}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
               </div>
             ))}
           </div>

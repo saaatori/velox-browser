@@ -38,6 +38,7 @@ class TabSnapshot(BaseModel):
     title: str = ""
     text: str = ""
     is_start_page: bool = False
+    group_name: str | None = None
 
 
 class OrganizeTabsRequest(BaseModel):
@@ -118,11 +119,15 @@ class WorkspaceSnapshotDetail(BaseModel):
     groups: list[TabGroup]
     duplicate_sets: list[list[str]]
     suggested_hibernating: list[str]
+    tabs: list[TabSnapshot] = Field(default_factory=list)
+    active_tab_id: str | None = None
 
 
 class WorkspaceSnapshotCreate(BaseModel):
     name: str
     snapshot: OrganizeTabsResponse
+    tabs: list[TabSnapshot] = Field(default_factory=list)
+    active_tab_id: str | None = None
 
 
 GROUP_RULES = (
@@ -284,7 +289,11 @@ async def save_workspace(request: WorkspaceSnapshotCreate) -> WorkspaceSnapshotR
     saved = save_workspace_snapshot(
         name=request.name,
         strategy=request.snapshot.strategy,
-        organize_payload=request.snapshot.model_dump(),
+        organize_payload={
+            **request.snapshot.model_dump(),
+            "tabs": [tab.model_dump() for tab in request.tabs],
+            "active_tab_id": request.active_tab_id,
+        },
     )
     return WorkspaceSnapshotRecord(
         **saved,

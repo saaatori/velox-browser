@@ -15,6 +15,7 @@ type BrowserTabState = {
   title: string
   url: string
   isStartPage: boolean
+  groupName: string | null
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
@@ -26,6 +27,14 @@ type TabSnapshot = BrowserTabState & {
 
 type BrowserTab = BrowserTabState & {
   view: WebContentsView | null
+}
+
+type WorkspaceTab = {
+  id: string
+  title: string
+  url: string
+  is_start_page: boolean
+  group_name?: string | null
 }
 
 let backendProcess: ChildProcess | null = null
@@ -102,6 +111,7 @@ function getTabState(tab: BrowserTab): BrowserTabState {
     title: tab.title,
     url: tab.url,
     isStartPage: tab.isStartPage,
+    groupName: tab.groupName,
     isLoading: tab.isLoading,
     canGoBack: tab.view?.webContents.canGoBack() ?? false,
     canGoForward: tab.view?.webContents.canGoForward() ?? false
@@ -227,13 +237,18 @@ function configureWebContentsView(tab: BrowserTab): void {
   })
 }
 
-function createTab(rawUrl = START_PAGE_URL): BrowserTab {
+function createTab(rawUrl = START_PAGE_URL, groupName: string | null = null, forcedId?: string): BrowserTab {
   const isStartPage = rawUrl === START_PAGE_URL
+  if (forcedId) {
+    const numericId = Number(forcedId.replace(/^tab-/, ''))
+    if (Number.isFinite(numericId)) nextTabId = Math.max(nextTabId, numericId + 1)
+  }
   const tab: BrowserTab = {
-    id: `tab-${nextTabId++}`,
+    id: forcedId ?? `tab-${nextTabId++}`,
     title: isStartPage ? '新标签页' : '正在加载...',
     url: isStartPage ? '' : rawUrl,
     isStartPage,
+    groupName,
     isLoading: !isStartPage,
     canGoBack: false,
     canGoForward: false,
@@ -256,6 +271,33 @@ function createTab(rawUrl = START_PAGE_URL): BrowserTab {
   activeTabId = tab.id
   showActiveTab()
   return tab
+}
+
+function clearTabsForWorkspace(): void {
+  const existingTabs = [...tabs]
+  tabs = []
+  activeTabId = null
+  for (const tab of existingTabs) {
+    if (tab.view && !tab.view.webContents.isDestroyed()) {
+      closingTabIds.add(tab.id)
+      mainWindow?.contentView.removeChildView(tab.view)
+      tab.view.webContents.close()
+    }
+  }
+}
+
+function restoreWorkspace(workspaceTabs: WorkspaceTab[], savedActiveTabId: string | null): void {
+  clearTabsForWorkspace()
+  const pages = workspaceTabs.filter((tab) => !tab.is_start_page && tab.url)
+  if (pages.length === 0) {
+    createTab()
+    return
+  }
+
+  const restoredTabs = pages.map((tab) => createTab(tab.url, tab.group_name ?? null, tab.id))
+  const activeRestoredTab = restoredTabs.find((tab) => tab.id === savedActiveTabId)
+  activeTabId = activeRestoredTab?.id ?? restoredTabs[0]?.id ?? null
+  showActiveTab()
 }
 
 function activateTab(tabId: string): void {
@@ -438,7 +480,17 @@ app.whenReady().then(async () => {
     }
     return response.json() as Promise<Record<string, unknown>>
   })
-  ipcMain.handle('storage:save-workspace', async (_event, payload: { name: string; snapshot: { groups: unknown[]; duplicate_sets: unknown[]; suggested_hibernating: string[]; strategy: string } }) => {
+  ipcMain.handle('storage:save-workspace', async (_event, payload: {
+    name: string
+    snapshot: {
+      groups: unknown[]
+      duplicate_sets: unknown[][]
+      suggested_hibernating: string[]
+      strategy: string
+    }
+    tabs: WorkspaceTab[]
+    activeTabId: string | null
+  }) => {
     const response = await fetch(`${getBackendBaseUrl()}/api/storage/workspaces/save`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -448,6 +500,9 @@ app.whenReady().then(async () => {
       throw new Error(`Failed to save workspace: ${response.status}`)
     }
     return response.json() as Promise<Record<string, unknown>>
+  })
+  ipcMain.handle('tabs:restore-workspace', (_event, payload: { tabs: WorkspaceTab[]; activeTabId: string | null }) => {
+    restoreWorkspace(payload.tabs, payload.activeTabId)
   })
   ipcMain.handle('tabs:create', (_event, url?: string) => getTabState(createTab(normalizeNavigationInput(url ?? START_PAGE_URL))))
   ipcMain.handle('tabs:activate', (_event, tabId: string) => activateTab(tabId))

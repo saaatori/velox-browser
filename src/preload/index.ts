@@ -5,6 +5,7 @@ type BrowserTabState = {
   title: string
   url: string
   isStartPage: boolean
+  groupName: string | null
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
@@ -61,6 +62,15 @@ type WorkspaceRecord = {
   }>
   duplicate_sets?: string[][]
   suggested_hibernating?: string[]
+  tabs?: Array<{
+    id: string
+    url: string
+    title: string
+    text: string
+    is_start_page: boolean
+    group_name?: string | null
+  }>
+  active_tab_id?: string | null
 }
 
 contextBridge.exposeInMainWorld('velox', {
@@ -77,6 +87,7 @@ contextBridge.exposeInMainWorld('velox', {
     reload: () => ipcRenderer.invoke('tabs:reload') as Promise<void>,
     stop: () => ipcRenderer.invoke('tabs:stop') as Promise<void>,
     hibernate: (tabId: string, reason?: string) => ipcRenderer.invoke('tabs:hibernate', { tabId, reason }) as Promise<Record<string, unknown>>,
+    restoreWorkspace: (payload: { tabs: Array<{ id: string; url: string; title: string; text: string; is_start_page: boolean; group_name?: string | null }>; activeTabId: string | null }) => ipcRenderer.invoke('tabs:restore-workspace', payload) as Promise<void>,
     onStateChange: (callback: (state: { tabs: BrowserTabState[]; activeTabId: string | null }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, state: { tabs: BrowserTabState[]; activeTabId: string | null }) => callback(state)
       ipcRenderer.on('tabs:state', listener)
@@ -92,7 +103,7 @@ contextBridge.exposeInMainWorld('velox', {
     restoreClosed: (recordId: number) => ipcRenderer.invoke('storage:restore-closed', recordId) as Promise<HibernatedTabRecord>,
     listWorkspaces: (limit?: number) => ipcRenderer.invoke('storage:list-workspaces', limit) as Promise<WorkspaceRecord[]>,
     getWorkspace: (recordId: number) => ipcRenderer.invoke('storage:get-workspace', recordId) as Promise<WorkspaceRecord>,
-    saveWorkspace: (payload: { name: string; snapshot: { groups: Array<{ name: string; description: string; tabs: string[] }>; duplicate_sets: string[][]; suggested_hibernating: string[]; strategy: string } }) => ipcRenderer.invoke('storage:save-workspace', payload) as Promise<WorkspaceRecord>,
+    saveWorkspace: (payload: { name: string; snapshot: { groups: Array<{ name: string; description: string; tabs: string[] }>; duplicate_sets: string[][]; suggested_hibernating: string[]; strategy: string }; tabs: Array<{ id: string; url: string; title: string; text: string; is_start_page: boolean; group_name?: string | null }>; activeTabId: string | null }) => ipcRenderer.invoke('storage:save-workspace', payload) as Promise<WorkspaceRecord>,
     hibernateTab: (payload: { tab: TabSnapshot; reason: string; originBatchId?: string | null }) => ipcRenderer.invoke('storage:hibernate-tab', payload) as Promise<Record<string, unknown>>
   }
 })

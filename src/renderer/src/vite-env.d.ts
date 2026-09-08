@@ -5,6 +5,7 @@ type BrowserTabState = {
   title: string
   url: string
   isStartPage: boolean
+  groupName: string | null
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
@@ -61,6 +62,15 @@ type WorkspaceRecord = {
   }>
   duplicate_sets?: string[][]
   suggested_hibernating?: string[]
+  tabs?: Array<{
+    id: string
+    url: string
+    title: string
+    text: string
+    is_start_page: boolean
+    group_name?: string | null
+  }>
+  active_tab_id?: string | null
 }
 
 interface Window {
@@ -78,6 +88,7 @@ interface Window {
       reload: () => Promise<void>
       stop: () => Promise<void>
       hibernate: (tabId: string, reason?: string) => Promise<Record<string, unknown>>
+      restoreWorkspace: (payload: { tabs: Array<{ id: string; url: string; title: string; text: string; is_start_page: boolean; group_name?: string | null }>; activeTabId: string | null }) => Promise<void>
       onStateChange: (callback: (state: { tabs: BrowserTabState[]; activeTabId: string | null }) => void) => () => void
     }
     storage: {
@@ -89,7 +100,7 @@ interface Window {
       restoreClosed: (recordId: number) => Promise<HibernatedTabRecord>
       listWorkspaces: (limit?: number) => Promise<WorkspaceRecord[]>
       getWorkspace: (recordId: number) => Promise<WorkspaceRecord>
-      saveWorkspace: (payload: { name: string; snapshot: { groups: Array<{ name: string; description: string; tabs: string[] }>; duplicate_sets: string[][]; suggested_hibernating: string[]; strategy: string } }) => Promise<WorkspaceRecord>
+      saveWorkspace: (payload: { name: string; snapshot: { groups: Array<{ name: string; description: string; tabs: string[] }>; duplicate_sets: string[][]; suggested_hibernating: string[]; strategy: string }; tabs: Array<{ id: string; url: string; title: string; text: string; is_start_page: boolean; group_name?: string | null }>; activeTabId: string | null }) => Promise<WorkspaceRecord>
       hibernateTab: (payload: { tab: TabSnapshot; reason: string; originBatchId?: string | null }) => Promise<Record<string, unknown>>
     }
   }
