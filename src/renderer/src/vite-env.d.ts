@@ -18,7 +18,9 @@ type StorageSummary = {
   snapshot_count: number
   organize_count: number
   hibernated_count: number
+  closed_count: number
   latest_snapshot_at: string | null
+  latest_closed_at: string | null
   latest_organize: {
     strategy: string
     created_at: string
@@ -61,6 +63,8 @@ interface Window {
       getSummary: () => Promise<StorageSummary>
       listHibernated: (limit?: number) => Promise<HibernatedTabRecord[]>
       restoreHibernated: (recordId: number) => Promise<HibernatedTabRecord>
+      listClosed: (limit?: number) => Promise<HibernatedTabRecord[]>
+      restoreClosed: (recordId: number) => Promise<HibernatedTabRecord>
       hibernateTab: (payload: { tab: TabSnapshot; reason: string; originBatchId?: string | null }) => Promise<Record<string, unknown>>
     }
   }

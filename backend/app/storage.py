@@ -72,6 +72,20 @@ def _create_connection() -> sqlite3.Connection:
 
         CREATE INDEX IF NOT EXISTS idx_hibernated_tabs_created_at
             ON hibernated_tabs(created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS closed_tabs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            browser_tab_id TEXT NOT NULL,
+            url TEXT NOT NULL,
+            title TEXT NOT NULL,
+            text TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            restored_at TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_closed_tabs_created_at
+            ON closed_tabs(created_at DESC);
         """
     )
     return connection
@@ -192,6 +206,76 @@ def list_hibernated_tabs(limit: int = 20) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def save_closed_tab(
+    tab: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    created_at = now_iso()
+    connection = get_connection()
+    with _lock:
+        cursor = connection.execute(
+            """
+            INSERT INTO closed_tabs (
+                browser_tab_id, url, title, text, reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tab.get("id", ""),
+                tab.get("url", ""),
+                tab.get("title", ""),
+                tab.get("text", ""),
+                reason,
+                created_at,
+            ),
+        )
+        connection.commit()
+
+    return {"id": cursor.lastrowid, "created_at": created_at}
+
+
+def list_closed_tabs(limit: int = 20) -> list[dict[str, Any]]:
+    connection = get_connection()
+    with _lock:
+        rows = connection.execute(
+            """
+            SELECT id, browser_tab_id, url, title, text, reason, restored_at, created_at
+            FROM closed_tabs
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def restore_closed_tab(record_id: int) -> dict[str, Any] | None:
+    restored_at = now_iso()
+    connection = get_connection()
+    with _lock:
+        row = connection.execute(
+            """
+            SELECT id, browser_tab_id, url, title, text, reason, restored_at, created_at
+            FROM closed_tabs
+            WHERE id = ?
+            """,
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        connection.execute(
+            """
+            UPDATE closed_tabs
+            SET restored_at = ?
+            WHERE id = ? AND restored_at IS NULL
+            """,
+            (restored_at, record_id),
+        )
+        connection.commit()
+    payload = dict(row)
+    payload["restored_at"] = restored_at
+    return payload
+
+
 def restore_hibernated_tab(record_id: int) -> dict[str, Any] | None:
     restored_at = now_iso()
     connection = get_connection()
@@ -226,11 +310,15 @@ def list_summary() -> dict[str, Any]:
         snapshot_count = connection.execute("SELECT COUNT(*) AS value FROM tab_snapshots").fetchone()["value"]
         organize_count = connection.execute("SELECT COUNT(*) AS value FROM organize_runs").fetchone()["value"]
         hibernated_count = connection.execute("SELECT COUNT(*) AS value FROM hibernated_tabs").fetchone()["value"]
+        closed_count = connection.execute("SELECT COUNT(*) AS value FROM closed_tabs").fetchone()["value"]
         latest_snapshot = connection.execute(
             "SELECT captured_at FROM tab_snapshots ORDER BY captured_at DESC LIMIT 1"
         ).fetchone()
         latest_organize = connection.execute(
             "SELECT strategy, created_at, response_json FROM organize_runs ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        latest_closed = connection.execute(
+            "SELECT created_at FROM closed_tabs ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
 
     latest_organize_payload = None
@@ -245,7 +333,9 @@ def list_summary() -> dict[str, Any]:
         "snapshot_count": snapshot_count,
         "organize_count": organize_count,
         "hibernated_count": hibernated_count,
+        "closed_count": closed_count,
         "latest_snapshot_at": latest_snapshot["captured_at"] if latest_snapshot else None,
+        "latest_closed_at": latest_closed["created_at"] if latest_closed else None,
         "latest_organize": {
             "strategy": latest_organize["strategy"],
             "created_at": latest_organize["created_at"],

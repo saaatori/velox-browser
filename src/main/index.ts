@@ -34,6 +34,7 @@ let mainWindow: BrowserWindow | null = null
 let tabs: BrowserTab[] = []
 let activeTabId: string | null = null
 let nextTabId = 1
+const closingTabIds = new Set<string>()
 
 function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -200,6 +201,11 @@ function attachViewEvents(tab: BrowserTab): void {
     updateTabState(tab)
   })
   contents.on('destroyed', () => {
+    if (closingTabIds.has(tab.id)) {
+      closingTabIds.delete(tab.id)
+      sendTabsState()
+      return
+    }
     tabs = tabs.filter((item) => item.id !== tab.id)
     if (activeTabId === tab.id) {
       activeTabId = tabs.at(-1)?.id ?? null
@@ -262,7 +268,10 @@ function closeTab(tabId: string): void {
   const index = tabs.findIndex((tab) => tab.id === tabId)
   if (index < 0) return
   const [tab] = tabs.splice(index, 1)
-  if (tab.view && !tab.view.webContents.isDestroyed()) tab.view.webContents.close()
+  if (tab.view && !tab.view.webContents.isDestroyed()) {
+    closingTabIds.add(tabId)
+    tab.view.webContents.close()
+  }
   if (activeTabId === tabId) activeTabId = tabs[index]?.id ?? tabs[index - 1]?.id ?? null
   if (tabs.length === 0) createTab()
   else showActiveTab()
@@ -397,9 +406,43 @@ app.whenReady().then(async () => {
     if (record.url) createTab(record.url)
     return record
   })
+  ipcMain.handle('storage:list-closed', async (_event, limit: number = 20) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/closed?limit=${encodeURIComponent(String(limit))}`)
+    if (!response.ok) {
+      throw new Error(`Failed to load closed tabs: ${response.status}`)
+    }
+    return response.json() as Promise<Array<Record<string, unknown>>>
+  })
+  ipcMain.handle('storage:restore-closed', async (_event, recordId: number) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/closed/${recordId}/restore`, {
+      method: 'POST'
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to restore closed tab: ${response.status}`)
+    }
+    const record = await response.json() as { url?: string }
+    if (record.url) createTab(record.url)
+    return record
+  })
   ipcMain.handle('tabs:create', (_event, url?: string) => getTabState(createTab(normalizeNavigationInput(url ?? START_PAGE_URL))))
   ipcMain.handle('tabs:activate', (_event, tabId: string) => activateTab(tabId))
-  ipcMain.handle('tabs:close', (_event, tabId: string) => closeTab(tabId))
+  ipcMain.handle('tabs:close', async (_event, tabId: string) => {
+    const snapshot = (await getTabSnapshots()).find((item) => item.id === tabId)
+    if (snapshot && !snapshot.isStartPage) {
+      const response = await fetch(`${getBackendBaseUrl()}/api/storage/tabs/closed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tab: snapshot,
+          reason: 'manual'
+        })
+      })
+      if (!response.ok) {
+        throw new Error(`Failed to store closed tab: ${response.status}`)
+      }
+    }
+    closeTab(tabId)
+  })
   ipcMain.handle('tabs:navigate', (_event, input: string) => navigateActiveTab(input))
   ipcMain.handle('tabs:back', () => {
     const tab = activeTabId ? findTab(activeTabId) : undefined

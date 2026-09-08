@@ -8,11 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from backend.app.storage import (
+    list_closed_tabs,
     list_hibernated_tabs,
     list_summary,
+    restore_closed_tab,
     restore_hibernated_tab,
     save_hibernated_tab,
     save_organize_run,
+    save_closed_tab,
     save_tab_snapshot,
 )
 
@@ -78,6 +81,17 @@ class HibernatedTabRecord(BaseModel):
     text: str
     reason: str
     origin_batch_id: str | None
+    restored_at: str | None
+    created_at: str
+
+
+class ClosedTabRecord(BaseModel):
+    id: int
+    browser_tab_id: str
+    url: str
+    title: str
+    text: str
+    reason: str
     restored_at: str | None
     created_at: str
 
@@ -215,6 +229,25 @@ async def restore_hibernated(record_id: int) -> HibernatedTabRecord:
 @app.get("/api/storage/summary")
 async def storage_summary() -> dict[str, object]:
     return list_summary()
+
+
+@app.post("/api/storage/tabs/closed")
+async def close_tab_record(request: HibernatedTabRequest) -> dict[str, str | int | None]:
+    result = save_closed_tab(request.tab.model_dump(), request.reason)
+    return {"status": "ok", **result}
+
+
+@app.get("/api/storage/closed", response_model=list[ClosedTabRecord])
+async def list_closed(limit: int = 20) -> list[ClosedTabRecord]:
+    return [ClosedTabRecord(**record) for record in list_closed_tabs(limit)]
+
+
+@app.post("/api/storage/closed/{record_id}/restore", response_model=ClosedTabRecord)
+async def restore_closed(record_id: int) -> ClosedTabRecord:
+    record = restore_closed_tab(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Closed tab not found")
+    return ClosedTabRecord(**record)
 
 
 @app.get("/health")

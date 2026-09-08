@@ -18,7 +18,9 @@ type StorageSummary = {
   snapshot_count: number
   organize_count: number
   hibernated_count: number
+  closed_count: number
   latest_snapshot_at: string | null
+  latest_closed_at: string | null
   latest_organize: {
     strategy: string
     created_at: string
@@ -64,6 +66,8 @@ contextBridge.exposeInMainWorld('velox', {
     getSummary: () => ipcRenderer.invoke('storage:get-summary') as Promise<StorageSummary>,
     listHibernated: (limit?: number) => ipcRenderer.invoke('storage:list-hibernated', limit) as Promise<HibernatedTabRecord[]>,
     restoreHibernated: (recordId: number) => ipcRenderer.invoke('storage:restore-hibernated', recordId) as Promise<HibernatedTabRecord>,
+    listClosed: (limit?: number) => ipcRenderer.invoke('storage:list-closed', limit) as Promise<HibernatedTabRecord[]>,
+    restoreClosed: (recordId: number) => ipcRenderer.invoke('storage:restore-closed', recordId) as Promise<HibernatedTabRecord>,
     hibernateTab: (payload: { tab: TabSnapshot; reason: string; originBatchId?: string | null }) => ipcRenderer.invoke('storage:hibernate-tab', payload) as Promise<Record<string, unknown>>
   }
 })
