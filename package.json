@@ -1,0 +1,33 @@
+{
+  "name": "velox-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Velox Browser, an AI-native desktop browser.",
+  "main": "out/main/index.js",
+  "author": "Velox",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "backend:dev": ".\\.venv\\Scripts\\python.exe -m uvicorn backend.app.main:app --reload --port 18765",
+    "backend:check": ".\\.venv\\Scripts\\python.exe -c \"from backend.app.main import app; print(app.title)\""
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^32.2.7",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}
