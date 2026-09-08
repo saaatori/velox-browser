@@ -29,6 +29,13 @@ type OrganizeResult = {
   strategy: string
 }
 
+type DuplicateGroupPreview = {
+  keepId: string
+  keepLabel: string
+  closeIds: string[]
+  closeLabels: string[]
+}
+
 type StorageSummary = {
   snapshot_count: number
   organize_count: number
@@ -73,6 +80,19 @@ function App() {
   const [hibernatingTabId, setHibernatingTabId] = useState<string | null>(null)
   const [storageBusy, setStorageBusy] = useState(false)
   const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId), [tabs, activeTabId])
+  const duplicateGroups = useMemo<DuplicateGroupPreview[]>(() => {
+    if (!organizeResult) return []
+    return organizeResult.duplicate_sets.map((group) => {
+      const keepId = group.includes(activeTabId ?? '') ? (activeTabId as string) : group[0]
+      const closeIds = group.filter((tabId) => tabId !== keepId)
+      return {
+        keepId,
+        keepLabel: tabs.find((tab) => tab.id === keepId)?.title || keepId,
+        closeIds,
+        closeLabels: closeIds.map((tabId) => tabs.find((tab) => tab.id === tabId)?.title || tabId)
+      }
+    })
+  }, [activeTabId, organizeResult, tabs])
 
   useEffect(() => {
     let cancelled = false
@@ -286,6 +306,27 @@ function App() {
     }
   }
 
+  async function mergeDuplicateGroup(group: DuplicateGroupPreview) {
+    if (group.closeIds.length === 0) return
+      setStorageBusy(true)
+    try {
+      for (const tabId of group.closeIds) {
+        await window.velox.tabs.close(tabId, 'duplicate-merge')
+      }
+      const [summary, hibernated, closed] = await Promise.all([
+        window.velox.storage.getSummary(),
+        window.velox.storage.listHibernated(8),
+        window.velox.storage.listClosed(8)
+      ])
+      setStorageSummary(summary)
+      setHibernatedTabs(hibernated)
+      setClosedTabs(closed)
+      await organizeTabs()
+    } finally {
+      setStorageBusy(false)
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -349,6 +390,24 @@ function App() {
                     <p>{group.description}</p>
                   </div>
                 ))}
+                {duplicateGroups.length > 0 && (
+                  <div className="duplicate-list">
+                    <div className="hibernate-note">
+                      <span>发现 {duplicateGroups.length} 组重复标签</span>
+                    </div>
+                    {duplicateGroups.map((group) => (
+                      <div className="duplicate-item" key={`${group.keepId}-${group.closeIds.join('-')}`}>
+                        <div className="duplicate-item-main">
+                          <strong>保留 {group.keepLabel}</strong>
+                          <span>关闭 {group.closeLabels.join('、')}</span>
+                        </div>
+                        <button type="button" disabled={storageBusy || group.closeIds.length === 0} onClick={() => void mergeDuplicateGroup(group)}>
+                          合并重复
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {organizeResult.suggested_hibernating.length > 0 && (
                   <div className="hibernate-note">
                     <span>建议稍后处理 {organizeResult.suggested_hibernating.length} 个后台标签</span>

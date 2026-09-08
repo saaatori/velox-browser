@@ -48,7 +48,7 @@ contextBridge.exposeInMainWorld('velox', {
     getSnapshots: () => ipcRenderer.invoke('tabs:get-snapshots') as Promise<TabSnapshot[]>,
     create: (url?: string) => ipcRenderer.invoke('tabs:create', url) as Promise<BrowserTabState>,
     activate: (tabId: string) => ipcRenderer.invoke('tabs:activate', tabId) as Promise<void>,
-    close: (tabId: string) => ipcRenderer.invoke('tabs:close', tabId) as Promise<void>,
+    close: (tabId: string, reason?: string) => ipcRenderer.invoke('tabs:close', tabId, reason) as Promise<void>,
     navigate: (input: string) => ipcRenderer.invoke('tabs:navigate', input) as Promise<void>,
     back: () => ipcRenderer.invoke('tabs:back') as Promise<void>,
     forward: () => ipcRenderer.invoke('tabs:forward') as Promise<void>,

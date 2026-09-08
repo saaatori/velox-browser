@@ -426,7 +426,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('tabs:create', (_event, url?: string) => getTabState(createTab(normalizeNavigationInput(url ?? START_PAGE_URL))))
   ipcMain.handle('tabs:activate', (_event, tabId: string) => activateTab(tabId))
-  ipcMain.handle('tabs:close', async (_event, tabId: string) => {
+  ipcMain.handle('tabs:close', async (_event, tabId: string, reason: string = 'manual') => {
     const snapshot = (await getTabSnapshots()).find((item) => item.id === tabId)
     if (snapshot && !snapshot.isStartPage) {
       const response = await fetch(`${getBackendBaseUrl()}/api/storage/tabs/closed`, {
@@ -434,7 +434,7 @@ app.whenReady().then(async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tab: snapshot,
-          reason: 'manual'
+          reason
         })
       })
       if (!response.ok) {

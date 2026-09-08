@@ -49,7 +49,7 @@ interface Window {
       getSnapshots: () => Promise<TabSnapshot[]>
       create: (url?: string) => Promise<BrowserTabState>
       activate: (tabId: string) => Promise<void>
-      close: (tabId: string) => Promise<void>
+      close: (tabId: string, reason?: string) => Promise<void>
       navigate: (input: string) => Promise<void>
       back: () => Promise<void>
       forward: () => Promise<void>
