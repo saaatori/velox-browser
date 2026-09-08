@@ -29,6 +29,20 @@ type OrganizeResult = {
   strategy: string
 }
 
+type AssistantResponse = {
+  answer: string
+  suggestions: string[]
+  intent: string
+  provider: string
+  referenced_tab_ids: string[]
+}
+
+type AssistantMessage = {
+  role: 'user' | 'assistant'
+  content: string
+  suggestions?: string[]
+}
+
 type DuplicateGroupPreview = {
   keepId: string
   keepLabel: string
@@ -103,6 +117,16 @@ function App() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [address, setAddress] = useState('')
   const [organizeOpen, setOrganizeOpen] = useState(false)
+  const [assistantOpen, setAssistantOpen] = useState(false)
+  const [assistantInput, setAssistantInput] = useState('')
+  const [assistantSending, setAssistantSending] = useState(false)
+  const [assistantError, setAssistantError] = useState('')
+  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([
+    {
+      role: 'assistant',
+      content: '你好，我是 Velox 助手。我可以读取当前标签上下文，帮你总结页面、检查重复标签或给出休眠建议。'
+    }
+  ])
   const [organizeStrategy, setOrganizeStrategy] = useState<OrganizeStrategy>('semantic')
   const [organizeLoading, setOrganizeLoading] = useState(false)
   const [organizeError, setOrganizeError] = useState('')
@@ -298,6 +322,47 @@ function App() {
     }
   }
 
+  async function sendAssistantMessage(rawMessage = assistantInput) {
+    const message = rawMessage.trim()
+    if (!message || assistantSending) return
+    setAssistantMessages((current) => [...current, { role: 'user', content: message }])
+    setAssistantInput('')
+    setAssistantSending(true)
+    setAssistantError('')
+    try {
+      const config = backendUrl ? { baseUrl: backendUrl } : await window.velox.getBackendConfig()
+      const snapshots = await window.velox.tabs.getSnapshots()
+      const response = await fetch(`${config.baseUrl}/api/assistant/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          tabs: snapshots.map((tab) => ({
+            id: tab.id,
+            url: tab.url,
+            title: tab.title,
+            text: tab.text,
+            is_start_page: tab.isStartPage
+          })),
+          active_tab_id: activeTabId
+        })
+      })
+      if (!response.ok) {
+        const detail = await response.text()
+        throw new Error(detail || 'AI 助手暂时不可用')
+      }
+      const result = await response.json() as AssistantResponse
+      setAssistantMessages((current) => [
+        ...current,
+        { role: 'assistant', content: result.answer, suggestions: result.suggestions }
+      ])
+    } catch (error) {
+      setAssistantError(error instanceof Error ? error.message : 'AI 助手暂时不可用')
+    } finally {
+      setAssistantSending(false)
+    }
+  }
+
   async function saveWorkspace() {
     if (!organizeResult) return
     setWorkspaceSaving(true)
@@ -434,6 +499,49 @@ function App() {
             ))}
           </div>
         </div>
+        {assistantOpen && (
+          <section className="assistant-panel">
+            <div className="panel-heading">
+              <div>
+                <strong>Velox AI 助手</strong>
+                <span>本地分析当前标签页，不上传浏览内容</span>
+              </div>
+              <button className="icon-button" type="button" aria-label="关闭 AI 助手" title="关闭" onClick={() => setAssistantOpen(false)}>
+                <X size={14} />
+              </button>
+            </div>
+            <div className="assistant-messages">
+              {assistantMessages.slice(-8).map((message, index) => (
+                <div className={`assistant-message ${message.role}`} key={`${message.role}-${index}-${message.content.slice(0, 12)}`}>
+                  <div className="assistant-message-content">{message.content}</div>
+                  {message.role === 'assistant' && message.suggestions && message.suggestions.length > 0 && (
+                    <div className="assistant-suggestions">
+                      {message.suggestions.map((suggestion) => (
+                        <button type="button" key={suggestion} disabled={assistantSending} onClick={() => void sendAssistantMessage(suggestion)}>
+                          {suggestion}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {assistantSending && <div className="assistant-message assistant"><div className="assistant-message-content">正在查看当前标签...</div></div>}
+            </div>
+            {assistantError && <p className="assistant-error">{assistantError}</p>}
+            <form className="assistant-input" onSubmit={(event) => { event.preventDefault(); void sendAssistantMessage() }}>
+              <input
+                value={assistantInput}
+                onChange={(event) => setAssistantInput(event.target.value)}
+                placeholder="问问当前页面或标签..."
+                aria-label="询问 Velox AI 助手"
+                disabled={assistantSending}
+              />
+              <button type="submit" aria-label="发送消息" title="发送" disabled={assistantSending || !assistantInput.trim()}>
+                <ArrowRight size={15} />
+              </button>
+            </form>
+          </section>
+        )}
         {organizeOpen && (
           <section className="organize-panel">
             <div className="panel-heading">
@@ -579,7 +687,9 @@ function App() {
             <input aria-label="地址栏" value={address} onChange={(event) => setAddress(event.target.value)} placeholder="输入网址或搜索内容" />
             <kbd>Ctrl L</kbd>
           </form>
-          <button className="ai-button" type="button"><Bot size={17} /><span>AI 助手</span></button>
+          <button className={`ai-button ${assistantOpen ? 'selected' : ''}`} type="button" onClick={() => setAssistantOpen((open) => !open)}>
+            <Bot size={17} /><span>AI 助手</span>
+          </button>
         </header>
         <section className={`start-page ${activeTab?.isStartPage ? '' : 'hidden'}`}>
           <div className="start-content">

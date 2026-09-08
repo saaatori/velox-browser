@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from backend.app.providers import AssistantContext, AssistantTab, LocalAIProvider
 from backend.app.storage import (
     list_closed_tabs,
     list_hibernated_tabs,
@@ -30,6 +31,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+assistant_provider = LocalAIProvider()
 
 
 class TabSnapshot(BaseModel):
@@ -128,6 +131,20 @@ class WorkspaceSnapshotCreate(BaseModel):
     snapshot: OrganizeTabsResponse
     tabs: list[TabSnapshot] = Field(default_factory=list)
     active_tab_id: str | None = None
+
+
+class AssistantRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    tabs: list[TabSnapshot] = Field(default_factory=list)
+    active_tab_id: str | None = None
+
+
+class AssistantResponse(BaseModel):
+    answer: str
+    suggestions: list[str]
+    intent: str
+    provider: str
+    referenced_tab_ids: list[str]
 
 
 GROUP_RULES = (
@@ -230,6 +247,33 @@ async def organize_tabs(request: OrganizeTabsRequest) -> OrganizeTabsResponse:
         response.model_dump(),
     )
     return response
+
+
+@app.post("/api/assistant/chat", response_model=AssistantResponse)
+async def assistant_chat(request: AssistantRequest) -> AssistantResponse:
+    reply = await assistant_provider.chat(
+        AssistantContext(
+            message=request.message,
+            tabs=[
+                AssistantTab(
+                    id=tab.id,
+                    title=tab.title,
+                    url=tab.url,
+                    text=tab.text,
+                    is_start_page=tab.is_start_page,
+                )
+                for tab in request.tabs
+            ],
+            active_tab_id=request.active_tab_id,
+        )
+    )
+    return AssistantResponse(
+        answer=reply.answer,
+        suggestions=reply.suggestions,
+        intent=reply.intent,
+        provider=reply.provider,
+        referenced_tab_ids=reply.referenced_tab_ids,
+    )
 
 
 @app.post("/api/storage/tabs/snapshot", response_model=SnapshotSyncResponse)
