@@ -27,6 +27,27 @@ kbd { margin-left: auto; color: #73828e; font-size: 10px; }
 .sidebar-spacer { flex: 1; }
 .sidebar-footer { display: grid; gap: 3px; }
 .footer-button { min-height: 34px; padding: 0 9px; border-radius: 6px; font-size: 12px; }
+.footer-button.selected { color: #d7eeee; background: #1c3035; }
+.organize-panel { margin-top: 12px; padding: 11px 8px 10px; border: 1px solid #293a42; border-radius: 7px; background: #121d23; }
+.panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.panel-heading strong, .panel-heading span { display: block; }
+.panel-heading strong { color: #dceeed; font-size: 12px; }
+.panel-heading span { margin-top: 3px; color: #7f9098; font-size: 10px; }
+.strategy-switcher { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin-top: 11px; padding: 3px; border-radius: 5px; background: #0d151a; }
+.strategy-switcher button { min-height: 25px; padding: 0; border: 0; border-radius: 4px; color: #81909b; background: transparent; font-size: 11px; }
+.strategy-switcher button.selected { color: #c8efeb; background: #244148; }
+.organize-action { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 31px; margin-top: 9px; border: 1px solid #347c79; border-radius: 5px; color: #b7eeea; background: #173033; font-size: 11px; }
+.organize-action:hover:not(:disabled) { background: #1d3d40; }
+.organize-action:disabled { cursor: default; opacity: .5; }
+.organize-error { margin: 8px 0 0; color: #ec9898; font-size: 10px; line-height: 1.4; }
+.organize-result { margin-top: 10px; }
+.result-summary { display: flex; justify-content: space-between; color: #89aaa9; font-size: 10px; }
+.result-group { padding: 8px 0; border-bottom: 1px solid #26333a; }
+.result-group:last-child { border-bottom: 0; }
+.result-group-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #d2e5e4; font-size: 11px; }
+.result-group-title span { display: grid; min-width: 18px; height: 18px; place-items: center; border-radius: 9px; color: #9fcbc7; background: #1e393d; font-size: 10px; }
+.result-group p { overflow: hidden; margin: 4px 0 0; color: #7f9098; font-size: 10px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.hibernate-note { margin: 8px 0 0; color: #c8ad79; font-size: 10px; }
 .workspace { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .topbar { display: flex; align-items: center; gap: 12px; height: 64px; padding: 0 18px; border-bottom: 1px solid #202a34; background: #111920; }
 .navigation-controls { display: flex; align-items: center; gap: 2px; }

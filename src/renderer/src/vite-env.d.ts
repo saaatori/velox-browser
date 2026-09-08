@@ -10,11 +10,16 @@ type BrowserTabState = {
   canGoForward: boolean
 }
 
+type TabSnapshot = BrowserTabState & {
+  text: string
+}
+
 interface Window {
   velox: {
     getBackendConfig: () => Promise<{ baseUrl: string }>
     tabs: {
       getState: () => Promise<{ tabs: BrowserTabState[]; activeTabId: string | null }>
+      getSnapshots: () => Promise<TabSnapshot[]>
       create: (url?: string) => Promise<BrowserTabState>
       activate: (tabId: string) => Promise<void>
       close: (tabId: string) => Promise<void>

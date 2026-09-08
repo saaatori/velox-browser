@@ -1,8 +1,11 @@
 import os
 from datetime import UTC, datetime
+from collections import defaultdict
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="Velox AI Backend", version="0.1.0", description="Local AI services for Velox Browser.")
 app.add_middleware(
@@ -12,6 +15,129 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class TabSnapshot(BaseModel):
+    id: str
+    url: str = ""
+    title: str = ""
+    text: str = ""
+    is_start_page: bool = False
+
+
+class OrganizeTabsRequest(BaseModel):
+    tabs: list[TabSnapshot] = Field(default_factory=list)
+    strategy: str = "semantic"
+    active_tab_id: str | None = None
+
+
+class TabGroup(BaseModel):
+    name: str
+    description: str
+    tabs: list[str]
+
+
+class OrganizeTabsResponse(BaseModel):
+    groups: list[TabGroup]
+    duplicate_sets: list[list[str]]
+    suggested_hibernating: list[str]
+    strategy: str
+
+
+GROUP_RULES = (
+    ("开发与代码", ("github", "stackoverflow", "stack overflow", "npm", "pypi", "代码", "编程", "api", "sdk")),
+    ("文档与学习", ("docs", "documentation", "教程", "指南", "课程", "学习", "reference", "文档")),
+    ("新闻与资讯", ("news", "新闻", "资讯", "报道", "博客", "blog")),
+    ("购物与产品", ("amazon", "jd.com", "taobao", "淘宝", "京东", "价格", "商品", "购买")),
+    ("视频与媒体", ("youtube", "bilibili", "视频", "电影", "音乐", "podcast")),
+)
+
+
+def normalize_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if not parsed.scheme or not parsed.netloc:
+        return url.strip().rstrip("/")
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.lower().startswith(("utm_", "ref", "spm"))
+    ]
+    return urlunparse((
+        parsed.scheme.lower(),
+        parsed.netloc.lower(),
+        parsed.path.rstrip("/") or "/",
+        "",
+        urlencode(sorted(query)),
+        "",
+    ))
+
+
+def compact_text(value: str, limit: int = 120) -> str:
+    text = " ".join(value.replace("\n", " ").split())
+    return text[:limit].rstrip()
+
+
+def classify_tab(tab: TabSnapshot) -> str:
+    haystack = f"{tab.title} {tab.url} {tab.text}".lower()
+    for group_name, keywords in GROUP_RULES:
+        if any(keyword in haystack for keyword in keywords):
+            return group_name
+    hostname = urlparse(tab.url).hostname or "其他页面"
+    return hostname.removeprefix("www.").split(".")[0].capitalize() or "其他页面"
+
+
+def describe_group(group_name: str, tabs: list[TabSnapshot]) -> str:
+    titles = [compact_text(tab.title, 42) for tab in tabs if tab.title]
+    if titles:
+        return "、".join(titles[:2]) + (" 等页面" if len(titles) > 2 else "")
+    return f"共 {len(tabs)} 个相关标签页"
+
+
+@app.post("/api/tabs/organize", response_model=OrganizeTabsResponse)
+async def organize_tabs(request: OrganizeTabsRequest) -> OrganizeTabsResponse:
+    if request.strategy not in {"semantic", "domain", "date"}:
+        raise HTTPException(status_code=400, detail="strategy must be semantic, domain, or date")
+
+    groups_by_name: dict[str, list[TabSnapshot]] = defaultdict(list)
+    normalized_urls: dict[str, list[str]] = defaultdict(list)
+    for tab in request.tabs:
+        if tab.is_start_page:
+            continue
+        group_name = classify_tab(tab) if request.strategy != "domain" else (
+            (urlparse(tab.url).hostname or "其他页面").removeprefix("www.")
+        )
+        groups_by_name[group_name].append(tab)
+        if tab.url:
+            normalized_urls[normalize_url(tab.url)].append(tab.id)
+
+    groups = [
+        TabGroup(
+            name=name,
+            description=describe_group(name, grouped_tabs),
+            tabs=[tab.id for tab in grouped_tabs],
+        )
+        for name, grouped_tabs in sorted(
+            groups_by_name.items(),
+            key=lambda item: (-len(item[1]), item[0]),
+        )
+    ]
+    duplicate_sets = [
+        tab_ids for normalized_url, tab_ids in normalized_urls.items()
+        if normalized_url and len(tab_ids) > 1
+    ]
+    suggested_hibernating = [
+        tab.id
+        for tab in request.tabs
+        if tab.id != request.active_tab_id and not tab.is_start_page
+    ]
+
+    return OrganizeTabsResponse(
+        groups=groups,
+        duplicate_sets=duplicate_sets,
+        suggested_hibernating=suggested_hibernating,
+        strategy=request.strategy,
+    )
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:

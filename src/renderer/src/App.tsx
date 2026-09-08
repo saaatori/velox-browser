@@ -11,10 +11,23 @@ import {
   Settings2,
   Sparkles,
   Square,
+  WandSparkles,
   X
 } from 'lucide-react'
 
 type BackendState = 'checking' | 'online' | 'offline'
+type OrganizeStrategy = 'semantic' | 'domain'
+
+type OrganizeResult = {
+  groups: Array<{
+    name: string
+    description: string
+    tabs: string[]
+  }>
+  duplicate_sets: string[][]
+  suggested_hibernating: string[]
+  strategy: string
+}
 
 function App() {
   const [backendState, setBackendState] = useState<BackendState>('checking')
@@ -22,6 +35,11 @@ function App() {
   const [tabs, setTabs] = useState<BrowserTabState[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [address, setAddress] = useState('')
+  const [organizeOpen, setOrganizeOpen] = useState(false)
+  const [organizeStrategy, setOrganizeStrategy] = useState<OrganizeStrategy>('semantic')
+  const [organizeLoading, setOrganizeLoading] = useState(false)
+  const [organizeError, setOrganizeError] = useState('')
+  const [organizeResult, setOrganizeResult] = useState<OrganizeResult | null>(null)
   const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId), [tabs, activeTabId])
 
   useEffect(() => {
@@ -107,6 +125,39 @@ function App() {
     return tab.title || (tab.url ? '未命名页面' : '新标签页')
   }
 
+  async function organizeTabs() {
+    setOrganizeLoading(true)
+    setOrganizeError('')
+    try {
+      const config = await window.velox.getBackendConfig()
+      const snapshots = await window.velox.tabs.getSnapshots()
+      const response = await fetch(`${config.baseUrl}/api/tabs/organize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tabs: snapshots.map((tab) => ({
+            id: tab.id,
+            url: tab.url,
+            title: tab.title,
+            text: tab.text,
+            is_start_page: tab.isStartPage
+          })),
+          strategy: organizeStrategy,
+          active_tab_id: activeTabId
+        })
+      })
+      if (!response.ok) {
+        const detail = await response.text()
+        throw new Error(detail || '标签整理失败')
+      }
+      setOrganizeResult(await response.json() as OrganizeResult)
+    } catch (error) {
+      setOrganizeError(error instanceof Error ? error.message : '标签整理失败')
+    } finally {
+      setOrganizeLoading(false)
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -138,8 +189,50 @@ function App() {
             ))}
           </div>
         </div>
+        {organizeOpen && (
+          <section className="organize-panel">
+            <div className="panel-heading">
+              <div>
+                <strong>AI 整理标签</strong>
+                <span>分析标题、域名和页面摘要</span>
+              </div>
+              <button className="icon-button" type="button" aria-label="关闭整理面板" title="关闭" onClick={() => setOrganizeOpen(false)}>
+                <X size={14} />
+              </button>
+            </div>
+            <div className="strategy-switcher" role="group" aria-label="整理策略">
+              <button className={organizeStrategy === 'semantic' ? 'selected' : ''} type="button" onClick={() => setOrganizeStrategy('semantic')}>主题</button>
+              <button className={organizeStrategy === 'domain' ? 'selected' : ''} type="button" onClick={() => setOrganizeStrategy('domain')}>域名</button>
+            </div>
+            <button className="organize-action" type="button" disabled={organizeLoading || tabs.length === 0} onClick={() => void organizeTabs()}>
+              <WandSparkles size={15} />
+              {organizeLoading ? '分析中...' : '开始分析'}
+            </button>
+            {organizeError && <p className="organize-error">{organizeError}</p>}
+            {organizeResult && (
+              <div className="organize-result">
+                <div className="result-summary">
+                  <span>{organizeResult.groups.length} 个分组</span>
+                  <span>{organizeResult.duplicate_sets.length} 组重复</span>
+                </div>
+                {organizeResult.groups.map((group) => (
+                  <div className="result-group" key={group.name}>
+                    <div className="result-group-title"><strong>{group.name}</strong><span>{group.tabs.length}</span></div>
+                    <p>{group.description}</p>
+                  </div>
+                ))}
+                {organizeResult.suggested_hibernating.length > 0 && (
+                  <p className="hibernate-note">建议稍后处理 {organizeResult.suggested_hibernating.length} 个后台标签</p>
+                )}
+              </div>
+            )}
+          </section>
+        )}
         <div className="sidebar-spacer" />
         <div className="sidebar-footer">
+          <button className={`footer-button ${organizeOpen ? 'selected' : ''}`} type="button" onClick={() => setOrganizeOpen((open) => !open)}>
+            <WandSparkles size={16} /><span>整理标签</span>
+          </button>
           <button className="footer-button" type="button"><LayoutPanelLeft size={16} /><span>工作区</span></button>
           <button className="footer-button" type="button"><Settings2 size={16} /><span>设置</span></button>
         </div>

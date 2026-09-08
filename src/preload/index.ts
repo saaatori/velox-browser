@@ -10,10 +10,15 @@ type BrowserTabState = {
   canGoForward: boolean
 }
 
+type TabSnapshot = BrowserTabState & {
+  text: string
+}
+
 contextBridge.exposeInMainWorld('velox', {
   getBackendConfig: () => ipcRenderer.invoke('backend:get-config') as Promise<{ baseUrl: string }>,
   tabs: {
     getState: () => ipcRenderer.invoke('tabs:get-state') as Promise<{ tabs: BrowserTabState[]; activeTabId: string | null }>,
+    getSnapshots: () => ipcRenderer.invoke('tabs:get-snapshots') as Promise<TabSnapshot[]>,
     create: (url?: string) => ipcRenderer.invoke('tabs:create', url) as Promise<BrowserTabState>,
     activate: (tabId: string) => ipcRenderer.invoke('tabs:activate', tabId) as Promise<void>,
     close: (tabId: string) => ipcRenderer.invoke('tabs:close', tabId) as Promise<void>,

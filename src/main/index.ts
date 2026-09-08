@@ -20,6 +20,10 @@ type BrowserTabState = {
   canGoForward: boolean
 }
 
+type TabSnapshot = BrowserTabState & {
+  text: string
+}
+
 type BrowserTab = BrowserTabState & {
   view: WebContentsView | null
 }
@@ -97,6 +101,23 @@ function getTabState(tab: BrowserTab): BrowserTabState {
     canGoBack: tab.view?.webContents.canGoBack() ?? false,
     canGoForward: tab.view?.webContents.canGoForward() ?? false
   }
+}
+
+async function getTabSnapshots(): Promise<TabSnapshot[]> {
+  return Promise.all(tabs.map(async (tab) => {
+    let text = ''
+    if (tab.view && !tab.view.webContents.isDestroyed()) {
+      try {
+        text = await tab.view.webContents.executeJavaScript(
+          `document.body ? document.body.innerText.slice(0, 500) : ''`,
+          true
+        )
+      } catch {
+        text = ''
+      }
+    }
+    return { ...getTabState(tab), text }
+  }))
 }
 
 function sendTabsState(): void {
@@ -320,6 +341,7 @@ app.whenReady().then(async () => {
   await startBackend()
   ipcMain.handle('backend:get-config', () => ({ baseUrl: `http://${BACKEND_HOST}:${backendPort}` }))
   ipcMain.handle('tabs:get-state', () => ({ tabs: tabs.map(getTabState), activeTabId }))
+  ipcMain.handle('tabs:get-snapshots', () => getTabSnapshots())
   ipcMain.handle('tabs:create', (_event, url?: string) => getTabState(createTab(normalizeNavigationInput(url ?? START_PAGE_URL))))
   ipcMain.handle('tabs:activate', (_event, tabId: string) => activateTab(tabId))
   ipcMain.handle('tabs:close', (_event, tabId: string) => closeTab(tabId))
