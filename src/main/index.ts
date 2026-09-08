@@ -91,6 +91,10 @@ function stopBackend(): void {
   }
 }
 
+function getBackendBaseUrl(): string {
+  return `http://${BACKEND_HOST}:${backendPort}`
+}
+
 function getTabState(tab: BrowserTab): BrowserTabState {
   return {
     id: tab.id,
@@ -339,9 +343,42 @@ app.whenReady().then(async () => {
   })
 
   await startBackend()
-  ipcMain.handle('backend:get-config', () => ({ baseUrl: `http://${BACKEND_HOST}:${backendPort}` }))
+  ipcMain.handle('backend:get-config', () => ({ baseUrl: getBackendBaseUrl() }))
   ipcMain.handle('tabs:get-state', () => ({ tabs: tabs.map(getTabState), activeTabId }))
   ipcMain.handle('tabs:get-snapshots', () => getTabSnapshots())
+  ipcMain.handle('storage:sync-tabs', async (_event, payload: { tabs: TabSnapshot[]; activeTabId: string | null }) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/tabs/snapshot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to sync tabs snapshot: ${response.status}`)
+    }
+    return response.json() as Promise<{ batch_id: string; captured_at: string; tab_count: number }>
+  })
+  ipcMain.handle('storage:get-summary', async () => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/summary`)
+    if (!response.ok) {
+      throw new Error(`Failed to load storage summary: ${response.status}`)
+    }
+    return response.json() as Promise<Record<string, unknown>>
+  })
+  ipcMain.handle('storage:hibernate-tab', async (_event, payload: { tab: TabSnapshot; reason: string; originBatchId?: string | null }) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/tabs/hibernate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tab: payload.tab,
+        reason: payload.reason,
+        origin_batch_id: payload.originBatchId ?? null
+      })
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to hibernate tab: ${response.status}`)
+    }
+    return response.json() as Promise<Record<string, unknown>>
+  })
   ipcMain.handle('tabs:create', (_event, url?: string) => getTabState(createTab(normalizeNavigationInput(url ?? START_PAGE_URL))))
   ipcMain.handle('tabs:activate', (_event, tabId: string) => activateTab(tabId))
   ipcMain.handle('tabs:close', (_event, tabId: string) => closeTab(tabId))

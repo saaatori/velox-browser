@@ -48,6 +48,7 @@ kbd { margin-left: auto; color: #73828e; font-size: 10px; }
 .result-group-title span { display: grid; min-width: 18px; height: 18px; place-items: center; border-radius: 9px; color: #9fcbc7; background: #1e393d; font-size: 10px; }
 .result-group p { overflow: hidden; margin: 4px 0 0; color: #7f9098; font-size: 10px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .hibernate-note { margin: 8px 0 0; color: #c8ad79; font-size: 10px; }
+.storage-summary { display: flex; justify-content: space-between; gap: 6px; margin-top: 10px; color: #7f9098; font-size: 10px; }
 .workspace { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .topbar { display: flex; align-items: center; gap: 12px; height: 64px; padding: 0 18px; border-bottom: 1px solid #202a34; background: #111920; }
 .navigation-controls { display: flex; align-items: center; gap: 2px; }

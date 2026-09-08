@@ -14,6 +14,19 @@ type TabSnapshot = BrowserTabState & {
   text: string
 }
 
+type StorageSummary = {
+  snapshot_count: number
+  organize_count: number
+  hibernated_count: number
+  latest_snapshot_at: string | null
+  latest_organize: {
+    strategy: string
+    created_at: string
+    group_count: number
+    duplicate_set_count: number
+  } | null
+}
+
 contextBridge.exposeInMainWorld('velox', {
   getBackendConfig: () => ipcRenderer.invoke('backend:get-config') as Promise<{ baseUrl: string }>,
   tabs: {
@@ -32,5 +45,10 @@ contextBridge.exposeInMainWorld('velox', {
       ipcRenderer.on('tabs:state', listener)
       return () => ipcRenderer.removeListener('tabs:state', listener)
     }
+  },
+  storage: {
+    syncTabs: (payload: { tabs: TabSnapshot[]; activeTabId: string | null }) => ipcRenderer.invoke('storage:sync-tabs', payload) as Promise<{ batch_id: string; captured_at: string; tab_count: number }>,
+    getSummary: () => ipcRenderer.invoke('storage:get-summary') as Promise<StorageSummary>,
+    hibernateTab: (payload: { tab: TabSnapshot; reason: string; originBatchId?: string | null }) => ipcRenderer.invoke('storage:hibernate-tab', payload) as Promise<Record<string, unknown>>
   }
 })

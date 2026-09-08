@@ -29,6 +29,19 @@ type OrganizeResult = {
   strategy: string
 }
 
+type StorageSummary = {
+  snapshot_count: number
+  organize_count: number
+  hibernated_count: number
+  latest_snapshot_at: string | null
+  latest_organize: {
+    strategy: string
+    created_at: string
+    group_count: number
+    duplicate_set_count: number
+  } | null
+}
+
 function App() {
   const [backendState, setBackendState] = useState<BackendState>('checking')
   const [backendUrl, setBackendUrl] = useState('')
@@ -40,6 +53,7 @@ function App() {
   const [organizeLoading, setOrganizeLoading] = useState(false)
   const [organizeError, setOrganizeError] = useState('')
   const [organizeResult, setOrganizeResult] = useState<OrganizeResult | null>(null)
+  const [storageSummary, setStorageSummary] = useState<StorageSummary | null>(null)
   const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId), [tabs, activeTabId])
 
   useEffect(() => {
@@ -78,12 +92,36 @@ function App() {
       if (cancelled) return
       setTabs(state.tabs)
       setActiveTabId(state.activeTabId)
+      void (async () => {
+        try {
+          const snapshots = await window.velox.tabs.getSnapshots()
+          await window.velox.storage.syncTabs({ tabs: snapshots, activeTabId: state.activeTabId })
+        } catch {
+          // Snapshot sync is best-effort.
+        }
+      })()
     })
     return () => {
       cancelled = true
       unsubscribe()
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadSummary() {
+      try {
+        const summary = await window.velox.storage.getSummary()
+        if (!cancelled) setStorageSummary(summary)
+      } catch {
+        if (!cancelled) setStorageSummary(null)
+      }
+    }
+    void loadSummary()
+    return () => {
+      cancelled = true
+    }
+  }, [organizeResult])
 
   useEffect(() => {
     setAddress(activeTab?.url ?? '')
@@ -150,7 +188,9 @@ function App() {
         const detail = await response.text()
         throw new Error(detail || '标签整理失败')
       }
-      setOrganizeResult(await response.json() as OrganizeResult)
+      const result = await response.json() as OrganizeResult
+      setOrganizeResult(result)
+      await window.velox.storage.syncTabs({ tabs: snapshots, activeTabId })
     } catch (error) {
       setOrganizeError(error instanceof Error ? error.message : '标签整理失败')
     } finally {
@@ -224,6 +264,13 @@ function App() {
                 {organizeResult.suggested_hibernating.length > 0 && (
                   <p className="hibernate-note">建议稍后处理 {organizeResult.suggested_hibernating.length} 个后台标签</p>
                 )}
+              </div>
+            )}
+            {storageSummary && (
+              <div className="storage-summary">
+                <span>快照 {storageSummary.snapshot_count}</span>
+                <span>整理 {storageSummary.organize_count}</span>
+                <span>休眠 {storageSummary.hibernated_count}</span>
               </div>
             )}
           </section>

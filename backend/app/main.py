@@ -7,6 +7,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from backend.app.storage import list_summary, save_hibernated_tab, save_organize_run, save_tab_snapshot
+
 app = FastAPI(title="Velox AI Backend", version="0.1.0", description="Local AI services for Velox Browser.")
 app.add_middleware(
     CORSMiddleware,
@@ -42,6 +44,23 @@ class OrganizeTabsResponse(BaseModel):
     duplicate_sets: list[list[str]]
     suggested_hibernating: list[str]
     strategy: str
+
+
+class TabSnapshotSyncRequest(BaseModel):
+    tabs: list[TabSnapshot] = Field(default_factory=list)
+    active_tab_id: str | None = None
+
+
+class SnapshotSyncResponse(BaseModel):
+    batch_id: str
+    captured_at: str
+    tab_count: int
+
+
+class HibernatedTabRequest(BaseModel):
+    tab: TabSnapshot
+    reason: str = "manual"
+    origin_batch_id: str | None = None
 
 
 GROUP_RULES = (
@@ -131,12 +150,39 @@ async def organize_tabs(request: OrganizeTabsRequest) -> OrganizeTabsResponse:
         if tab.id != request.active_tab_id and not tab.is_start_page
     ]
 
-    return OrganizeTabsResponse(
+    response = OrganizeTabsResponse(
         groups=groups,
         duplicate_sets=duplicate_sets,
         suggested_hibernating=suggested_hibernating,
         strategy=request.strategy,
     )
+    save_organize_run(
+        request.strategy,
+        request.active_tab_id,
+        request.model_dump(),
+        response.model_dump(),
+    )
+    return response
+
+
+@app.post("/api/storage/tabs/snapshot", response_model=SnapshotSyncResponse)
+async def sync_tab_snapshot(request: TabSnapshotSyncRequest) -> SnapshotSyncResponse:
+    result = save_tab_snapshot(
+        [tab.model_dump() for tab in request.tabs],
+        request.active_tab_id,
+    )
+    return SnapshotSyncResponse(**result)
+
+
+@app.post("/api/storage/tabs/hibernate")
+async def hibernate_tab(request: HibernatedTabRequest) -> dict[str, str | int | None]:
+    result = save_hibernated_tab(request.tab.model_dump(), request.reason, request.origin_batch_id)
+    return {"status": "ok", **result}
+
+
+@app.get("/api/storage/summary")
+async def storage_summary() -> dict[str, object]:
+    return list_summary()
 
 
 @app.get("/health")
