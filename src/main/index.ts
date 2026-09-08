@@ -424,6 +424,31 @@ app.whenReady().then(async () => {
     if (record.url) createTab(record.url)
     return record
   })
+  ipcMain.handle('storage:list-workspaces', async (_event, limit: number = 20) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/workspaces?limit=${encodeURIComponent(String(limit))}`)
+    if (!response.ok) {
+      throw new Error(`Failed to load workspaces: ${response.status}`)
+    }
+    return response.json() as Promise<Array<Record<string, unknown>>>
+  })
+  ipcMain.handle('storage:get-workspace', async (_event, recordId: number) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/workspaces/${recordId}`)
+    if (!response.ok) {
+      throw new Error(`Failed to load workspace: ${response.status}`)
+    }
+    return response.json() as Promise<Record<string, unknown>>
+  })
+  ipcMain.handle('storage:save-workspace', async (_event, payload: { name: string; snapshot: { groups: unknown[]; duplicate_sets: unknown[]; suggested_hibernating: string[]; strategy: string } }) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/workspaces/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to save workspace: ${response.status}`)
+    }
+    return response.json() as Promise<Record<string, unknown>>
+  })
   ipcMain.handle('tabs:create', (_event, url?: string) => getTabState(createTab(normalizeNavigationInput(url ?? START_PAGE_URL))))
   ipcMain.handle('tabs:activate', (_event, tabId: string) => activateTab(tabId))
   ipcMain.handle('tabs:close', async (_event, tabId: string, reason: string = 'manual') => {

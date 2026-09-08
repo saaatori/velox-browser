@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
@@ -40,7 +40,14 @@ type StorageSummary = {
   snapshot_count: number
   organize_count: number
   hibernated_count: number
+  closed_count: number
+  workspace_count: number
   latest_snapshot_at: string | null
+  latest_closed_at: string | null
+  latest_workspace: {
+    name: string
+    created_at: string
+  } | null
   latest_organize: {
     strategy: string
     created_at: string
@@ -63,6 +70,23 @@ type HibernatedTabRecord = {
 
 type ClosedTabRecord = HibernatedTabRecord
 
+type WorkspaceRecord = {
+  id: number
+  name: string
+  strategy: string
+  created_at: string
+  updated_at: string
+  group_count: number
+  duplicate_set_count: number
+  groups?: Array<{
+    name: string
+    description: string
+    tabs: string[]
+  }>
+  duplicate_sets?: string[][]
+  suggested_hibernating?: string[]
+}
+
 function App() {
   const [backendState, setBackendState] = useState<BackendState>('checking')
   const [backendUrl, setBackendUrl] = useState('')
@@ -77,6 +101,9 @@ function App() {
   const [storageSummary, setStorageSummary] = useState<StorageSummary | null>(null)
   const [hibernatedTabs, setHibernatedTabs] = useState<HibernatedTabRecord[]>([])
   const [closedTabs, setClosedTabs] = useState<ClosedTabRecord[]>([])
+  const [savedWorkspaces, setSavedWorkspaces] = useState<WorkspaceRecord[]>([])
+  const [workspaceName, setWorkspaceName] = useState('')
+  const [workspaceSaving, setWorkspaceSaving] = useState(false)
   const [hibernatingTabId, setHibernatingTabId] = useState<string | null>(null)
   const [storageBusy, setStorageBusy] = useState(false)
   const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId), [tabs, activeTabId])
@@ -93,6 +120,19 @@ function App() {
       }
     })
   }, [activeTabId, organizeResult, tabs])
+
+  const refreshStorageState = useCallback(async () => {
+    const [summary, hibernated, closed, workspaces] = await Promise.all([
+      window.velox.storage.getSummary(),
+      window.velox.storage.listHibernated(8),
+      window.velox.storage.listClosed(8),
+      window.velox.storage.listWorkspaces(8)
+    ])
+    setStorageSummary(summary)
+    setHibernatedTabs(hibernated)
+    setClosedTabs(closed)
+    setSavedWorkspaces(workspaces)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -150,16 +190,7 @@ function App() {
     let cancelled = false
     async function refreshStorageLists() {
       try {
-        const [summary, hibernated, closed] = await Promise.all([
-          window.velox.storage.getSummary(),
-          window.velox.storage.listHibernated(8),
-          window.velox.storage.listClosed(8)
-        ])
-        if (!cancelled) {
-          setStorageSummary(summary)
-          setHibernatedTabs(hibernated)
-          setClosedTabs(closed)
-        }
+        await refreshStorageState()
       } catch {
         if (!cancelled) {
           setClosedTabs([])
@@ -240,18 +271,43 @@ function App() {
       const result = await response.json() as OrganizeResult
       setOrganizeResult(result)
       await window.velox.storage.syncTabs({ tabs: snapshots, activeTabId })
-      const [summary, hibernated, closed] = await Promise.all([
-        window.velox.storage.getSummary(),
-        window.velox.storage.listHibernated(8),
-        window.velox.storage.listClosed(8)
-      ])
-      setStorageSummary(summary)
-      setHibernatedTabs(hibernated)
-      setClosedTabs(closed)
+      await refreshStorageState()
     } catch (error) {
       setOrganizeError(error instanceof Error ? error.message : '标签整理失败')
     } finally {
       setOrganizeLoading(false)
+    }
+  }
+
+  async function saveWorkspace() {
+    if (!organizeResult) return
+    setWorkspaceSaving(true)
+    try {
+      const name = workspaceName.trim() || organizeResult.groups[0]?.name || '工作区快照'
+      await window.velox.storage.saveWorkspace({ name, snapshot: organizeResult })
+      setWorkspaceName(name)
+      await refreshStorageState()
+    } finally {
+      setWorkspaceSaving(false)
+    }
+  }
+
+  async function loadWorkspace(recordId: number) {
+    setStorageBusy(true)
+    try {
+      const workspace = await window.velox.storage.getWorkspace(recordId)
+      setOrganizeStrategy(workspace.strategy === 'domain' ? 'domain' : 'semantic')
+      setOrganizeResult({
+        groups: workspace.groups ?? [],
+        duplicate_sets: workspace.duplicate_sets ?? [],
+        suggested_hibernating: workspace.suggested_hibernating ?? [],
+        strategy: workspace.strategy
+      })
+      setWorkspaceName(workspace.name)
+      setOrganizeOpen(true)
+      await refreshStorageState()
+    } finally {
+      setStorageBusy(false)
     }
   }
 
@@ -260,13 +316,7 @@ function App() {
     setStorageBusy(true)
     try {
       await window.velox.tabs.hibernate(tabId, 'manual')
-      const [summary, hibernated] = await Promise.all([
-        window.velox.storage.getSummary(),
-        window.velox.storage.listHibernated(8)
-      ])
-      setStorageSummary(summary)
-      setHibernatedTabs(hibernated)
-      setClosedTabs(await window.velox.storage.listClosed(8))
+      await refreshStorageState()
     } finally {
       setHibernatingTabId(null)
       setStorageBusy(false)
@@ -277,13 +327,7 @@ function App() {
     setStorageBusy(true)
     try {
       await window.velox.storage.restoreHibernated(recordId)
-      const [summary, hibernated] = await Promise.all([
-        window.velox.storage.getSummary(),
-        window.velox.storage.listHibernated(8)
-      ])
-      setStorageSummary(summary)
-      setHibernatedTabs(hibernated)
-      setClosedTabs(await window.velox.storage.listClosed(8))
+      await refreshStorageState()
     } finally {
       setStorageBusy(false)
     }
@@ -293,14 +337,7 @@ function App() {
     setStorageBusy(true)
     try {
       await window.velox.storage.restoreClosed(recordId)
-      const [summary, hibernated, closed] = await Promise.all([
-        window.velox.storage.getSummary(),
-        window.velox.storage.listHibernated(8),
-        window.velox.storage.listClosed(8)
-      ])
-      setStorageSummary(summary)
-      setHibernatedTabs(hibernated)
-      setClosedTabs(closed)
+      await refreshStorageState()
     } finally {
       setStorageBusy(false)
     }
@@ -308,19 +345,12 @@ function App() {
 
   async function mergeDuplicateGroup(group: DuplicateGroupPreview) {
     if (group.closeIds.length === 0) return
-      setStorageBusy(true)
+    setStorageBusy(true)
     try {
       for (const tabId of group.closeIds) {
         await window.velox.tabs.close(tabId, 'duplicate-merge')
       }
-      const [summary, hibernated, closed] = await Promise.all([
-        window.velox.storage.getSummary(),
-        window.velox.storage.listHibernated(8),
-        window.velox.storage.listClosed(8)
-      ])
-      setStorageSummary(summary)
-      setHibernatedTabs(hibernated)
-      setClosedTabs(closed)
+      await refreshStorageState()
       await organizeTabs()
     } finally {
       setStorageBusy(false)
@@ -384,6 +414,16 @@ function App() {
                   <span>{organizeResult.groups.length} 个分组</span>
                   <span>{organizeResult.duplicate_sets.length} 组重复</span>
                 </div>
+                <div className="workspace-save">
+                  <input
+                    value={workspaceName}
+                    onChange={(event) => setWorkspaceName(event.target.value)}
+                    placeholder="工作区名称"
+                  />
+                  <button type="button" onClick={() => void saveWorkspace()} disabled={workspaceSaving}>
+                    {workspaceSaving ? '保存中...' : '保存工作区'}
+                  </button>
+                </div>
                 {organizeResult.groups.map((group) => (
                   <div className="result-group" key={group.name}>
                     <div className="result-group-title"><strong>{group.name}</strong><span>{group.tabs.length}</span></div>
@@ -428,6 +468,18 @@ function App() {
                 <span>整理 {storageSummary.organize_count}</span>
                 <span>休眠 {storageSummary.hibernated_count}</span>
                 <span>关闭 {storageSummary.closed_count}</span>
+                <span>工作区 {storageSummary.workspace_count}</span>
+              </div>
+            )}
+            {savedWorkspaces.length > 0 && (
+              <div className="hibernated-list">
+                <div className="hibernated-heading">已保存工作区</div>
+                {savedWorkspaces.map((item) => (
+                  <button className="hibernated-item" type="button" key={item.id} disabled={storageBusy} onClick={() => void loadWorkspace(item.id)}>
+                    <strong>{item.name}</strong>
+                    <span>{item.group_count} 组 · {item.duplicate_set_count} 组重复</span>
+                  </button>
+                ))}
               </div>
             )}
             {hibernatedTabs.length > 0 && (

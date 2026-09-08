@@ -10,12 +10,15 @@ from pydantic import BaseModel, Field
 from backend.app.storage import (
     list_closed_tabs,
     list_hibernated_tabs,
+    get_workspace_snapshot,
     list_summary,
+    list_workspace_snapshots,
     restore_closed_tab,
     restore_hibernated_tab,
     save_hibernated_tab,
     save_organize_run,
     save_closed_tab,
+    save_workspace_snapshot,
     save_tab_snapshot,
 )
 
@@ -94,6 +97,32 @@ class ClosedTabRecord(BaseModel):
     reason: str
     restored_at: str | None
     created_at: str
+
+
+class WorkspaceSnapshotRecord(BaseModel):
+    id: int
+    name: str
+    strategy: str
+    created_at: str
+    updated_at: str
+    group_count: int
+    duplicate_set_count: int
+
+
+class WorkspaceSnapshotDetail(BaseModel):
+    id: int
+    name: str
+    strategy: str
+    created_at: str
+    updated_at: str
+    groups: list[TabGroup]
+    duplicate_sets: list[list[str]]
+    suggested_hibernating: list[str]
+
+
+class WorkspaceSnapshotCreate(BaseModel):
+    name: str
+    snapshot: OrganizeTabsResponse
 
 
 GROUP_RULES = (
@@ -248,6 +277,33 @@ async def restore_closed(record_id: int) -> ClosedTabRecord:
     if record is None:
         raise HTTPException(status_code=404, detail="Closed tab not found")
     return ClosedTabRecord(**record)
+
+
+@app.post("/api/storage/workspaces/save", response_model=WorkspaceSnapshotRecord)
+async def save_workspace(request: WorkspaceSnapshotCreate) -> WorkspaceSnapshotRecord:
+    saved = save_workspace_snapshot(
+        name=request.name,
+        strategy=request.snapshot.strategy,
+        organize_payload=request.snapshot.model_dump(),
+    )
+    return WorkspaceSnapshotRecord(
+        **saved,
+        group_count=len(request.snapshot.groups),
+        duplicate_set_count=len(request.snapshot.duplicate_sets),
+    )
+
+
+@app.get("/api/storage/workspaces", response_model=list[WorkspaceSnapshotRecord])
+async def list_workspaces(limit: int = 20) -> list[WorkspaceSnapshotRecord]:
+    return [WorkspaceSnapshotRecord(**record) for record in list_workspace_snapshots(limit)]
+
+
+@app.get("/api/storage/workspaces/{record_id}", response_model=WorkspaceSnapshotDetail)
+async def get_workspace(record_id: int) -> WorkspaceSnapshotDetail:
+    record = get_workspace_snapshot(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Workspace snapshot not found")
+    return WorkspaceSnapshotDetail(**record)
 
 
 @app.get("/health")

@@ -86,6 +86,18 @@ def _create_connection() -> sqlite3.Connection:
 
         CREATE INDEX IF NOT EXISTS idx_closed_tabs_created_at
             ON closed_tabs(created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS workspace_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            organize_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_workspace_snapshots_created_at
+            ON workspace_snapshots(created_at DESC);
         """
     )
     return connection
@@ -276,6 +288,95 @@ def restore_closed_tab(record_id: int) -> dict[str, Any] | None:
     return payload
 
 
+def save_workspace_snapshot(
+    name: str,
+    strategy: str,
+    organize_payload: dict[str, Any],
+) -> dict[str, Any]:
+    created_at = now_iso()
+    connection = get_connection()
+    with _lock:
+        cursor = connection.execute(
+            """
+            INSERT INTO workspace_snapshots (name, strategy, organize_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                strategy,
+                json.dumps(organize_payload, ensure_ascii=False),
+                created_at,
+                created_at,
+            ),
+        )
+        connection.commit()
+
+    return {
+        "id": cursor.lastrowid,
+        "name": name,
+        "strategy": strategy,
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
+
+
+def list_workspace_snapshots(limit: int = 20) -> list[dict[str, Any]]:
+    connection = get_connection()
+    with _lock:
+        rows = connection.execute(
+            """
+            SELECT id, name, strategy, organize_json, created_at, updated_at
+            FROM workspace_snapshots
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        record = dict(row)
+        organize_payload = {}
+        try:
+            organize_payload = json.loads(record["organize_json"])
+        except json.JSONDecodeError:
+            organize_payload = {}
+        results.append({
+            "id": record["id"],
+            "name": record["name"],
+            "strategy": record["strategy"],
+            "created_at": record["created_at"],
+            "updated_at": record["updated_at"],
+            "group_count": len(organize_payload.get("groups", [])),
+            "duplicate_set_count": len(organize_payload.get("duplicate_sets", [])),
+        })
+    return results
+
+
+def get_workspace_snapshot(record_id: int) -> dict[str, Any] | None:
+    connection = get_connection()
+    with _lock:
+        row = connection.execute(
+            """
+            SELECT id, name, strategy, organize_json, created_at, updated_at
+            FROM workspace_snapshots
+            WHERE id = ?
+            """,
+            (record_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    record = dict(row)
+    organize_payload = json.loads(record["organize_json"])
+    return {
+        "id": record["id"],
+        "name": record["name"],
+        "strategy": record["strategy"],
+        "created_at": record["created_at"],
+        "updated_at": record["updated_at"],
+        **organize_payload,
+    }
+
+
 def restore_hibernated_tab(record_id: int) -> dict[str, Any] | None:
     restored_at = now_iso()
     connection = get_connection()
@@ -311,6 +412,7 @@ def list_summary() -> dict[str, Any]:
         organize_count = connection.execute("SELECT COUNT(*) AS value FROM organize_runs").fetchone()["value"]
         hibernated_count = connection.execute("SELECT COUNT(*) AS value FROM hibernated_tabs").fetchone()["value"]
         closed_count = connection.execute("SELECT COUNT(*) AS value FROM closed_tabs").fetchone()["value"]
+        workspace_count = connection.execute("SELECT COUNT(*) AS value FROM workspace_snapshots").fetchone()["value"]
         latest_snapshot = connection.execute(
             "SELECT captured_at FROM tab_snapshots ORDER BY captured_at DESC LIMIT 1"
         ).fetchone()
@@ -319,6 +421,9 @@ def list_summary() -> dict[str, Any]:
         ).fetchone()
         latest_closed = connection.execute(
             "SELECT created_at FROM closed_tabs ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        latest_workspace = connection.execute(
+            "SELECT name, created_at FROM workspace_snapshots ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
 
     latest_organize_payload = None
@@ -334,8 +439,13 @@ def list_summary() -> dict[str, Any]:
         "organize_count": organize_count,
         "hibernated_count": hibernated_count,
         "closed_count": closed_count,
+        "workspace_count": workspace_count,
         "latest_snapshot_at": latest_snapshot["captured_at"] if latest_snapshot else None,
         "latest_closed_at": latest_closed["created_at"] if latest_closed else None,
+        "latest_workspace": {
+            "name": latest_workspace["name"],
+            "created_at": latest_workspace["created_at"],
+        } if latest_workspace else None,
         "latest_organize": {
             "strategy": latest_organize["strategy"],
             "created_at": latest_organize["created_at"],

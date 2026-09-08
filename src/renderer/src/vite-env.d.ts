@@ -19,8 +19,13 @@ type StorageSummary = {
   organize_count: number
   hibernated_count: number
   closed_count: number
+  workspace_count: number
   latest_snapshot_at: string | null
   latest_closed_at: string | null
+  latest_workspace: {
+    name: string
+    created_at: string
+  } | null
   latest_organize: {
     strategy: string
     created_at: string
@@ -39,6 +44,23 @@ type HibernatedTabRecord = {
   origin_batch_id: string | null
   restored_at: string | null
   created_at: string
+}
+
+type WorkspaceRecord = {
+  id: number
+  name: string
+  strategy: string
+  created_at: string
+  updated_at: string
+  group_count: number
+  duplicate_set_count: number
+  groups?: Array<{
+    name: string
+    description: string
+    tabs: string[]
+  }>
+  duplicate_sets?: string[][]
+  suggested_hibernating?: string[]
 }
 
 interface Window {
@@ -65,6 +87,9 @@ interface Window {
       restoreHibernated: (recordId: number) => Promise<HibernatedTabRecord>
       listClosed: (limit?: number) => Promise<HibernatedTabRecord[]>
       restoreClosed: (recordId: number) => Promise<HibernatedTabRecord>
+      listWorkspaces: (limit?: number) => Promise<WorkspaceRecord[]>
+      getWorkspace: (recordId: number) => Promise<WorkspaceRecord>
+      saveWorkspace: (payload: { name: string; snapshot: { groups: Array<{ name: string; description: string; tabs: string[] }>; duplicate_sets: string[][]; suggested_hibernating: string[]; strategy: string } }) => Promise<WorkspaceRecord>
       hibernateTab: (payload: { tab: TabSnapshot; reason: string; originBatchId?: string | null }) => Promise<Record<string, unknown>>
     }
   }
