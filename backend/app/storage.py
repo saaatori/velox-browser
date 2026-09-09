@@ -98,9 +98,74 @@ def _create_connection() -> sqlite3.Connection:
 
         CREATE INDEX IF NOT EXISTS idx_workspace_snapshots_created_at
             ON workspace_snapshots(created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS ai_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            mode TEXT NOT NULL DEFAULT 'local',
+            base_url TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT '',
+            api_key TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
         """
     )
     return connection
+
+
+def get_ai_settings() -> dict[str, Any]:
+    connection = get_connection()
+    with _lock:
+        row = connection.execute(
+            """
+            SELECT mode, base_url, model, api_key, updated_at
+            FROM ai_settings
+            WHERE id = 1
+            """
+        ).fetchone()
+    if row is None:
+        return {
+            "mode": "local",
+            "base_url": "",
+            "model": "",
+            "api_key": "",
+            "updated_at": None,
+        }
+    return dict(row)
+
+
+def save_ai_settings(
+    mode: str,
+    base_url: str,
+    model: str,
+    api_key: str | None = None,
+    clear_api_key: bool = False,
+) -> dict[str, Any]:
+    existing = get_ai_settings()
+    stored_api_key = "" if clear_api_key else (api_key if api_key else existing.get("api_key", ""))
+    updated_at = now_iso()
+    connection = get_connection()
+    with _lock:
+        connection.execute(
+            """
+            INSERT INTO ai_settings (id, mode, base_url, model, api_key, updated_at)
+            VALUES (1, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                mode = excluded.mode,
+                base_url = excluded.base_url,
+                model = excluded.model,
+                api_key = excluded.api_key,
+                updated_at = excluded.updated_at
+            """,
+            (mode, base_url, model, stored_api_key, updated_at),
+        )
+        connection.commit()
+    return {
+        "mode": mode,
+        "base_url": base_url,
+        "model": model,
+        "api_key": stored_api_key,
+        "updated_at": updated_at,
+    }
 
 
 def get_connection() -> sqlite3.Connection:

@@ -43,6 +43,15 @@ type AssistantMessage = {
   suggestions?: string[]
 }
 
+type AISettings = {
+  mode: 'local' | 'external'
+  base_url: string
+  model: string
+  api_key: string
+  api_key_configured: boolean
+  updated_at: string | null
+}
+
 type DuplicateGroupPreview = {
   keepId: string
   keepLabel: string
@@ -127,6 +136,17 @@ function App() {
       content: '你好，我是 Velox 助手。我可以读取当前标签上下文，帮你总结页面、检查重复标签或给出休眠建议。'
     }
   ])
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState('')
+  const [aiSettings, setAiSettings] = useState<AISettings>({
+    mode: 'local',
+    base_url: '',
+    model: '',
+    api_key: '',
+    api_key_configured: false,
+    updated_at: null
+  })
   const [organizeStrategy, setOrganizeStrategy] = useState<OrganizeStrategy>('semantic')
   const [organizeLoading, setOrganizeLoading] = useState(false)
   const [organizeError, setOrganizeError] = useState('')
@@ -247,6 +267,25 @@ function App() {
   }, [backendState, organizeResult])
 
   useEffect(() => {
+    if (backendState !== 'online' || !backendUrl) return
+    let cancelled = false
+    async function loadAISettings() {
+      try {
+        const response = await fetch(`${backendUrl}/api/settings/ai`)
+        if (!response.ok) throw new Error('无法读取模型设置')
+        const settings = await response.json() as Omit<AISettings, 'api_key'>
+        if (!cancelled) setAiSettings((current) => ({ ...current, ...settings, api_key: '' }))
+      } catch (error) {
+        if (!cancelled) setSettingsError(error instanceof Error ? error.message : '无法读取模型设置')
+      }
+    }
+    void loadAISettings()
+    return () => {
+      cancelled = true
+    }
+  }, [backendState, backendUrl])
+
+  useEffect(() => {
     setAddress(activeTab?.url ?? '')
   }, [activeTab?.id, activeTab?.url])
 
@@ -360,6 +399,38 @@ function App() {
       setAssistantError(error instanceof Error ? error.message : 'AI 助手暂时不可用')
     } finally {
       setAssistantSending(false)
+    }
+  }
+
+  async function saveAISettings() {
+    if (!backendUrl) return
+    setSettingsSaving(true)
+    setSettingsError('')
+    try {
+      const response = await fetch(`${backendUrl}/api/settings/ai`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: aiSettings.mode,
+          base_url: aiSettings.base_url,
+          model: aiSettings.model,
+          api_key: aiSettings.api_key || null
+        })
+      })
+      if (!response.ok) {
+        const detail = await response.text()
+        throw new Error(detail || '模型设置保存失败')
+      }
+      const saved = await response.json() as Omit<AISettings, 'api_key'>
+      setAiSettings((current) => ({ ...current, ...saved, api_key: '' }))
+      setAssistantMessages((current) => [
+        ...current,
+        { role: 'assistant', content: saved.mode === 'external' ? '外部模型设置已保存，后续消息会使用该 Provider。' : '已切换到本地模式，浏览内容不会发送到外部服务。' }
+      ])
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : '模型设置保存失败')
+    } finally {
+      setSettingsSaving(false)
     }
   }
 
@@ -660,13 +731,71 @@ function App() {
             )}
           </section>
         )}
+        {settingsOpen && (
+          <section className="settings-panel">
+            <div className="panel-heading">
+              <div>
+                <strong>模型设置</strong>
+                <span>选择 Provider，Velox 不替你绑定厂商</span>
+              </div>
+              <button className="icon-button" type="button" aria-label="关闭模型设置" title="关闭" onClick={() => setSettingsOpen(false)}>
+                <X size={14} />
+              </button>
+            </div>
+            <label className="settings-field">
+              <span>运行模式</span>
+              <select
+                value={aiSettings.mode}
+                onChange={(event) => setAiSettings((current) => ({ ...current, mode: event.target.value as AISettings['mode'] }))}
+              >
+                <option value="local">本地模式</option>
+                <option value="external">外部模型</option>
+              </select>
+            </label>
+            {aiSettings.mode === 'external' && (
+              <>
+                <label className="settings-field">
+                  <span>Base URL</span>
+                  <input
+                    value={aiSettings.base_url}
+                    onChange={(event) => setAiSettings((current) => ({ ...current, base_url: event.target.value }))}
+                    placeholder="例如 https://api.example.com/v1"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>模型名</span>
+                  <input
+                    value={aiSettings.model}
+                    onChange={(event) => setAiSettings((current) => ({ ...current, model: event.target.value }))}
+                    placeholder="填写你选择的模型 ID"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>API Key {aiSettings.api_key_configured && <em>已配置</em>}</span>
+                  <input
+                    type="password"
+                    value={aiSettings.api_key}
+                    onChange={(event) => setAiSettings((current) => ({ ...current, api_key: event.target.value }))}
+                    placeholder={aiSettings.api_key_configured ? '留空以保持现有 Key' : '输入 API Key'}
+                  />
+                </label>
+              </>
+            )}
+            {settingsError && <p className="settings-error">{settingsError}</p>}
+            <button className="settings-save" type="button" onClick={() => void saveAISettings()} disabled={settingsSaving || backendState !== 'online'}>
+              {settingsSaving ? '保存中...' : '保存模型设置'}
+            </button>
+          </section>
+        )}
         <div className="sidebar-spacer" />
         <div className="sidebar-footer">
           <button className={`footer-button ${organizeOpen ? 'selected' : ''}`} type="button" onClick={() => setOrganizeOpen((open) => !open)}>
             <WandSparkles size={16} /><span>整理标签</span>
           </button>
           <button className="footer-button" type="button"><LayoutPanelLeft size={16} /><span>工作区</span></button>
-          <button className="footer-button" type="button"><Settings2 size={16} /><span>设置</span></button>
+          <button className={`footer-button ${settingsOpen ? 'selected' : ''}`} type="button" onClick={() => setSettingsOpen((open) => !open)}>
+            <Settings2 size={16} /><span>设置</span>
+          </button>
         </div>
       </aside>
       <section className="workspace">
@@ -704,7 +833,7 @@ function App() {
             </form>
             <div className="quick-actions">
               <button type="button" onClick={() => document.querySelector<HTMLInputElement>('.search-box input')?.focus()}><Search size={15} />开始搜索</button>
-              <button type="button"><Bot size={15} />询问 AI</button>
+              <button type="button" onClick={() => setAssistantOpen(true)}><Bot size={15} />询问 AI</button>
             </div>
           </div>
         </section>

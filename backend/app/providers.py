@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import json
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -186,3 +190,85 @@ class LocalAIProvider:
             provider=self.provider_name,
             referenced_tab_ids=referenced,
         )
+
+
+class OpenAICompatibleProvider:
+    """Provider for any service exposing the OpenAI chat completions shape."""
+
+    def __init__(self, base_url: str, model: str, api_key: str) -> None:
+        self.base_url = base_url.strip().rstrip("/")
+        self.model = model.strip()
+        self.api_key = api_key.strip()
+        self.provider_name = f"openai-compatible:{self.model}"
+
+    async def chat(self, context: AssistantContext) -> AssistantReply:
+        answer = await asyncio.to_thread(self._complete, context)
+        return AssistantReply(
+            answer=answer,
+            suggestions=["总结当前页面", "检查重复标签", "建议休眠后台标签"],
+            intent="external_chat",
+            provider=self.provider_name,
+            referenced_tab_ids=[tab.id for tab in context.tabs if not tab.is_start_page and tab.url],
+        )
+
+    def _complete(self, context: AssistantContext) -> str:
+        endpoint = self.base_url
+        if not endpoint.endswith("/chat/completions"):
+            endpoint = f"{endpoint}/chat/completions"
+        tab_context = "\n".join(
+            f"- {tab.id}: {tab.title or '未命名页面'} | {tab.url}\n  摘要: {compact_text(tab.text, 500)}"
+            for tab in context.tabs
+            if not tab.is_start_page and tab.url
+        )
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是 Velox Browser 的助手。请使用中文回答，优先根据当前浏览器上下文回答。"
+                        "不要声称执行了尚未执行的浏览器操作；需要操作时请明确说明建议。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"当前活动标签 ID：{context.active_tab_id or '无'}\n"
+                        f"当前标签上下文：\n{tab_context or '无网页标签'}\n\n"
+                        f"用户问题：{context.message}"
+                    ),
+                },
+            ],
+            "temperature": 0.2,
+        }
+        request = Request(
+            endpoint,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=45) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"外部模型请求失败（HTTP {error.code}）：{detail}") from error
+        except URLError as error:
+            raise RuntimeError(f"外部模型连接失败：{error.reason}") from error
+        except TimeoutError as error:
+            raise RuntimeError("外部模型请求超时") from error
+
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise RuntimeError("外部模型返回格式不兼容，需要 choices[0].message.content") from error
+        if isinstance(content, list):
+            content = "".join(
+                item.get("text", "") for item in content if isinstance(item, dict)
+            )
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("外部模型返回了空回答")
+        return content.strip()

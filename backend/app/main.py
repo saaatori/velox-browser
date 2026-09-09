@@ -7,8 +7,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from backend.app.providers import AssistantContext, AssistantTab, LocalAIProvider
+from backend.app.providers import AssistantContext, AssistantTab, LocalAIProvider, OpenAICompatibleProvider
 from backend.app.storage import (
+    get_ai_settings,
     list_closed_tabs,
     list_hibernated_tabs,
     get_workspace_snapshot,
@@ -20,6 +21,7 @@ from backend.app.storage import (
     save_organize_run,
     save_closed_tab,
     save_workspace_snapshot,
+    save_ai_settings,
     save_tab_snapshot,
 )
 
@@ -31,9 +33,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-assistant_provider = LocalAIProvider()
-
 
 class TabSnapshot(BaseModel):
     id: str
@@ -147,6 +146,22 @@ class AssistantResponse(BaseModel):
     referenced_tab_ids: list[str]
 
 
+class AISettingsRequest(BaseModel):
+    mode: str = "local"
+    base_url: str = ""
+    model: str = ""
+    api_key: str | None = None
+    clear_api_key: bool = False
+
+
+class AISettingsResponse(BaseModel):
+    mode: str
+    base_url: str
+    model: str
+    api_key_configured: bool
+    updated_at: str | None
+
+
 GROUP_RULES = (
     ("开发与代码", ("github", "stackoverflow", "stack overflow", "npm", "pypi", "代码", "编程", "api", "sdk")),
     ("文档与学习", ("docs", "documentation", "教程", "指南", "课程", "学习", "reference", "文档")),
@@ -251,7 +266,19 @@ async def organize_tabs(request: OrganizeTabsRequest) -> OrganizeTabsResponse:
 
 @app.post("/api/assistant/chat", response_model=AssistantResponse)
 async def assistant_chat(request: AssistantRequest) -> AssistantResponse:
-    reply = await assistant_provider.chat(
+    settings = get_ai_settings()
+    if settings["mode"] == "external":
+        if not settings["base_url"] or not settings["model"] or not settings["api_key"]:
+            raise HTTPException(status_code=400, detail="请先完整配置外部模型的 Base URL、模型名和 API Key")
+        provider = OpenAICompatibleProvider(
+            base_url=settings["base_url"],
+            model=settings["model"],
+            api_key=settings["api_key"],
+        )
+    else:
+        provider = LocalAIProvider()
+    try:
+        reply = await provider.chat(
         AssistantContext(
             message=request.message,
             tabs=[
@@ -266,13 +293,49 @@ async def assistant_chat(request: AssistantRequest) -> AssistantResponse:
             ],
             active_tab_id=request.active_tab_id,
         )
-    )
+        )
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
     return AssistantResponse(
         answer=reply.answer,
         suggestions=reply.suggestions,
         intent=reply.intent,
         provider=reply.provider,
         referenced_tab_ids=reply.referenced_tab_ids,
+    )
+
+
+@app.get("/api/settings/ai", response_model=AISettingsResponse)
+async def get_ai_settings_endpoint() -> AISettingsResponse:
+    settings = get_ai_settings()
+    return AISettingsResponse(
+        mode=settings["mode"],
+        base_url=settings["base_url"],
+        model=settings["model"],
+        api_key_configured=bool(settings["api_key"]),
+        updated_at=settings["updated_at"],
+    )
+
+
+@app.put("/api/settings/ai", response_model=AISettingsResponse)
+async def update_ai_settings(request: AISettingsRequest) -> AISettingsResponse:
+    if request.mode not in {"local", "external"}:
+        raise HTTPException(status_code=400, detail="mode must be local or external")
+    if request.mode == "external" and (not request.base_url.strip() or not request.model.strip()):
+        raise HTTPException(status_code=400, detail="外部模式需要填写 Base URL 和模型名")
+    saved = save_ai_settings(
+        mode=request.mode,
+        base_url=request.base_url.strip(),
+        model=request.model.strip(),
+        api_key=request.api_key,
+        clear_api_key=request.clear_api_key,
+    )
+    return AISettingsResponse(
+        mode=saved["mode"],
+        base_url=saved["base_url"],
+        model=saved["model"],
+        api_key_configured=bool(saved["api_key"]),
+        updated_at=saved["updated_at"],
     )
 
 

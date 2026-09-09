@@ -101,6 +101,16 @@ kbd { margin-left: auto; color: #73828e; font-size: 10px; }
 .assistant-input button { display: grid; width: 29px; height: 29px; place-items: center; padding: 0; border: 1px solid #347c79; border-radius: 5px; color: #b7eeea; background: #173033; }
 .assistant-input button:hover:not(:disabled) { background: #204046; }
 .assistant-input button:disabled { cursor: default; opacity: .45; }
+.settings-panel { display: grid; gap: 9px; margin-top: 12px; padding: 11px 8px 10px; border: 1px solid #293a42; border-radius: 7px; background: #121d23; }
+.settings-field { display: grid; gap: 5px; color: #9cb0b8; font-size: 10px; }
+.settings-field span { display: flex; align-items: center; justify-content: space-between; }
+.settings-field em { color: #71cfc5; font-size: 9px; font-style: normal; }
+.settings-field input, .settings-field select { width: 100%; height: 29px; padding: 0 8px; border: 1px solid #293a42; border-radius: 5px; outline: 0; color: #d7e5e4; background: #0f171c; font-size: 10px; }
+.settings-field input:focus, .settings-field select:focus { border-color: #4faaa5; }
+.settings-error { margin: 0; color: #ec9898; font-size: 10px; line-height: 1.4; }
+.settings-save { min-height: 30px; border: 1px solid #347c79; border-radius: 5px; color: #b7eeea; background: #173033; font-size: 10px; }
+.settings-save:hover:not(:disabled) { background: #204046; }
+.settings-save:disabled { cursor: default; opacity: .5; }
 .start-page { display: grid; flex: 1; place-items: center; padding: 40px 24px 100px; background: #0c1117; }
 .start-page.hidden { visibility: hidden; }
 .start-content { width: min(620px, 100%); text-align: center; }
