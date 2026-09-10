@@ -66,6 +66,14 @@ type BrowserHistoryRecord = {
   last_visited_at: string
 }
 
+type BookmarkRecord = {
+  id: number
+  url: string
+  title: string
+  created_at: string
+  updated_at: string
+}
+
 type DomElementInfo = {
   id: string
   selector: string
@@ -974,6 +982,40 @@ app.whenReady().then(async () => {
     })
     if (!response.ok) {
       throw new Error(`Failed to delete browser history: ${response.status}`)
+    }
+    return response.json() as Promise<Record<string, unknown>>
+  })
+  ipcMain.handle('storage:list-bookmarks', async (_event, limit: number = 50) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/bookmarks?limit=${encodeURIComponent(String(limit))}`)
+    if (!response.ok) {
+      throw new Error(`Failed to load bookmarks: ${response.status}`)
+    }
+    return response.json() as Promise<BookmarkRecord[]>
+  })
+  ipcMain.handle('storage:get-bookmark-by-url', async (_event, url: string) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/bookmarks/by-url?url=${encodeURIComponent(url)}`)
+    if (!response.ok) {
+      throw new Error(`Failed to load bookmark: ${response.status}`)
+    }
+    return response.json() as Promise<BookmarkRecord | null>
+  })
+  ipcMain.handle('storage:save-bookmark', async (_event, payload: { url: string; title: string }) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/bookmarks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to save bookmark: ${response.status}`)
+    }
+    return response.json() as Promise<BookmarkRecord>
+  })
+  ipcMain.handle('storage:delete-bookmark', async (_event, recordId: number) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/bookmarks/${recordId}`, {
+      method: 'DELETE'
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to delete bookmark: ${response.status}`)
     }
     return response.json() as Promise<Record<string, unknown>>
   })

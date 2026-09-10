@@ -12,6 +12,7 @@ import {
   Search,
   Settings2,
   Sparkles,
+  Star,
   Square,
   Trash2,
   WandSparkles,
@@ -116,6 +117,7 @@ type StorageSummary = {
   workspace_count: number
   search_agent_count?: number
   history_count?: number
+  bookmark_count?: number
   latest_snapshot_at: string | null
   latest_closed_at: string | null
   latest_workspace: {
@@ -132,6 +134,11 @@ type StorageSummary = {
     title: string
     url: string
     last_visited_at: string
+  } | null
+  latest_bookmark?: {
+    title: string
+    url: string
+    updated_at: string
   } | null
 }
 
@@ -156,6 +163,14 @@ type BrowserHistoryRecord = {
   visit_count: number
   first_visited_at: string
   last_visited_at: string
+}
+
+type BookmarkRecord = {
+  id: number
+  url: string
+  title: string
+  created_at: string
+  updated_at: string
 }
 
 type WorkspaceRecord = {
@@ -273,6 +288,7 @@ function App() {
   const [organizeOpen, setOrganizeOpen] = useState(false)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [bookmarksOpen, setBookmarksOpen] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
   const [assistantInput, setAssistantInput] = useState('')
   const [assistantSending, setAssistantSending] = useState(false)
@@ -316,12 +332,18 @@ function App() {
   const [hibernatedTabs, setHibernatedTabs] = useState<HibernatedTabRecord[]>([])
   const [closedTabs, setClosedTabs] = useState<ClosedTabRecord[]>([])
   const [browserHistory, setBrowserHistory] = useState<BrowserHistoryRecord[]>([])
+  const [bookmarks, setBookmarks] = useState<BookmarkRecord[]>([])
   const [savedWorkspaces, setSavedWorkspaces] = useState<WorkspaceRecord[]>([])
   const [workspaceName, setWorkspaceName] = useState('')
   const [workspaceSaving, setWorkspaceSaving] = useState(false)
   const [hibernatingTabId, setHibernatingTabId] = useState<string | null>(null)
   const [storageBusy, setStorageBusy] = useState(false)
   const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId), [tabs, activeTabId])
+  const canBookmarkActiveTab = Boolean(activeTab?.url?.startsWith('http://') || activeTab?.url?.startsWith('https://'))
+  const activeBookmark = useMemo(
+    () => bookmarks.find((bookmark) => bookmark.url === activeTab?.url) ?? null,
+    [activeTab?.url, bookmarks]
+  )
   const duplicateGroups = useMemo<DuplicateGroupPreview[]>(() => {
     if (!organizeResult) return []
     return organizeResult.duplicate_sets.map((group) => {
@@ -370,17 +392,19 @@ function App() {
   }, [backendUrl])
 
   const refreshStorageState = useCallback(async () => {
-    const [summary, hibernated, closed, history, workspaces] = await Promise.all([
+    const [summary, hibernated, closed, history, bookmarkList, workspaces] = await Promise.all([
       window.velox.storage.getSummary(),
       window.velox.storage.listHibernated(8),
       window.velox.storage.listClosed(8),
       window.velox.storage.listHistory(20),
+      window.velox.storage.listBookmarks(20),
       window.velox.storage.listWorkspaces(8)
     ])
     setStorageSummary(summary)
     setHibernatedTabs(hibernated)
     setClosedTabs(closed)
     setBrowserHistory(history)
+    setBookmarks(bookmarkList)
     setSavedWorkspaces(workspaces)
   }, [])
 
@@ -534,18 +558,20 @@ function App() {
     }
   }
 
-  function toggleSidebarPanel(panel: 'search' | 'organize' | 'workspace' | 'history' | 'settings') {
+  function toggleSidebarPanel(panel: 'search' | 'organize' | 'workspace' | 'history' | 'bookmarks' | 'settings') {
     const nextSearch = panel === 'search' ? !searchAgentOpen : false
     const nextOrganize = panel === 'organize' ? !organizeOpen : false
     const nextWorkspace = panel === 'workspace' ? !workspaceOpen : false
     const nextHistory = panel === 'history' ? !historyOpen : false
+    const nextBookmarks = panel === 'bookmarks' ? !bookmarksOpen : false
     const nextSettings = panel === 'settings' ? !settingsOpen : false
     setSearchAgentOpen(nextSearch)
     setOrganizeOpen(nextOrganize)
     setWorkspaceOpen(nextWorkspace)
     setHistoryOpen(nextHistory)
+    setBookmarksOpen(nextBookmarks)
     setSettingsOpen(nextSettings)
-    if ((nextWorkspace || nextHistory) && backendState === 'online') {
+    if ((nextWorkspace || nextHistory || nextBookmarks) && backendState === 'online') {
       void refreshStorageState()
     }
   }
@@ -1020,6 +1046,46 @@ function App() {
     } catch (error) {
       setBrowserHistory(previousHistory)
       window.alert(error instanceof Error ? error.message : '历史记录删除失败')
+    } finally {
+      setStorageBusy(false)
+    }
+  }
+
+  async function toggleActiveBookmark() {
+    if (!activeTab?.url || !canBookmarkActiveTab || storageBusy) return
+    setStorageBusy(true)
+    try {
+      if (activeBookmark) {
+        await window.velox.storage.deleteBookmark(activeBookmark.id)
+      } else {
+        await window.velox.storage.saveBookmark({
+          url: activeTab.url,
+          title: tabLabel(activeTab)
+        })
+      }
+      await refreshStorageState()
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '收藏操作失败')
+    } finally {
+      setStorageBusy(false)
+    }
+  }
+
+  async function openBookmark(url: string) {
+    await window.velox.tabs.create(url)
+    setBookmarksOpen(false)
+  }
+
+  async function deleteBookmarkEntry(recordId: number) {
+    const previousBookmarks = bookmarks
+    setStorageBusy(true)
+    setBookmarks((current) => current.filter((item) => item.id !== recordId))
+    try {
+      await window.velox.storage.deleteBookmark(recordId)
+      await refreshStorageState()
+    } catch (error) {
+      setBookmarks(previousBookmarks)
+      window.alert(error instanceof Error ? error.message : '收藏删除失败')
     } finally {
       setStorageBusy(false)
     }
@@ -1618,6 +1684,53 @@ function App() {
             )}
           </section>
         )}
+        {bookmarksOpen && (
+          <section className="workspace-panel">
+            <div className="panel-heading">
+              <div>
+                <strong>收藏夹</strong>
+                <span>保存常用网页</span>
+              </div>
+              <button className="icon-button" type="button" aria-label="关闭收藏夹" title="关闭" onClick={() => setBookmarksOpen(false)}>
+                <X size={14} />
+              </button>
+            </div>
+            <div className="workspace-panel-summary">
+              <span>{bookmarks.length} 个收藏</span>
+              <button type="button" onClick={() => void refreshStorageState()} disabled={storageBusy || backendState !== 'online'}>
+                刷新
+              </button>
+            </div>
+            {bookmarks.length > 0 ? (
+              <div className="workspace-list">
+                {bookmarks.map((item) => (
+                  <div className="workspace-item" key={item.id}>
+                    <button className="workspace-item-main" type="button" disabled={storageBusy} onClick={() => void openBookmark(item.url)}>
+                      <strong>{item.title || item.url}</strong>
+                      <span>{item.updated_at.replace('T', ' ').slice(0, 16)}</span>
+                    </button>
+                    <button
+                      className="icon-button workspace-item-delete"
+                      type="button"
+                      aria-label={`删除收藏 ${item.title || item.url}`}
+                      title="删除收藏"
+                      disabled={storageBusy}
+                      onClick={() => void deleteBookmarkEntry(item.id)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="workspace-empty">
+                <Star size={18} />
+                <span>还没有收藏</span>
+                <small>打开网页后，点击地址栏右侧的星标即可收藏。</small>
+              </div>
+            )}
+          </section>
+        )}
         <div className="sidebar-spacer" />
         <div className="sidebar-footer">
           <button className={`footer-button ${searchAgentOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('search')}>
@@ -1631,6 +1744,9 @@ function App() {
           </button>
           <button className={`footer-button ${historyOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('history')}>
             <History size={16} /><span>历史记录</span>
+          </button>
+          <button className={`footer-button ${bookmarksOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('bookmarks')}>
+            <Star size={16} /><span>收藏夹</span>
           </button>
           <button className={`footer-button ${settingsOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('settings')}>
             <Settings2 size={16} /><span>设置</span>
@@ -1655,6 +1771,16 @@ function App() {
             <input aria-label="地址栏" value={address} onChange={(event) => setAddress(event.target.value)} placeholder="输入网址或搜索内容" />
             <kbd>Ctrl L</kbd>
           </form>
+          <button
+            className={`toolbar-button bookmark-button ${activeBookmark ? 'bookmarked' : ''}`}
+            type="button"
+            aria-label={activeBookmark ? '取消收藏当前页面' : '收藏当前页面'}
+            title={activeBookmark ? '取消收藏当前页面' : '收藏当前页面'}
+            disabled={!canBookmarkActiveTab || storageBusy}
+            onClick={() => void toggleActiveBookmark()}
+          >
+            <Star size={16} fill={activeBookmark ? 'currentColor' : 'none'} />
+          </button>
           <button className={`ai-button ${assistantOpen ? 'selected' : ''}`} type="button" onClick={() => setAssistantOpen((open) => !open)}>
             <Bot size={17} /><span>AI 助手</span>
           </button>

@@ -105,6 +105,7 @@ kbd { margin-left: auto; color: #73828e; font-size: 10px; }
 .toolbar-button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; color: #81909b; background: transparent; }
 .toolbar-button:hover:not(:disabled) { color: #e6f0f1; background: #27333d; }
 .toolbar-button:disabled { cursor: default; opacity: 0.35; }
+.bookmark-button.bookmarked { color: #ffd36b; background: #2a2616; }
 .address-bar { display: flex; align-items: center; gap: 9px; min-width: 0; height: 38px; flex: 1; padding: 0 12px; border: 1px solid #2a3742; border-radius: 7px; color: #81909b; background: #0d141a; }
 .address-bar input, .search-box input { min-width: 0; flex: 1; border: 0; outline: 0; color: #e7eff1; background: transparent; }
 .address-bar input::placeholder, .search-box input::placeholder { color: #6e7d89; }

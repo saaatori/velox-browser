@@ -9,11 +9,14 @@ from pydantic import BaseModel, Field
 
 from backend.app.providers import AssistantContext, AssistantTab, LocalAIProvider, OpenAICompatibleProvider
 from backend.app.storage import (
+    delete_bookmark,
     delete_browser_history_entry,
     delete_search_agent_run,
     delete_workspace_snapshot,
+    get_bookmark_by_url,
     get_search_agent_run,
     get_ai_settings,
+    list_bookmarks,
     list_browser_history,
     list_closed_tabs,
     list_hibernated_tabs,
@@ -29,6 +32,7 @@ from backend.app.storage import (
     save_closed_tab,
     save_workspace_snapshot,
     save_ai_settings,
+    save_bookmark,
     save_browser_history_entry,
     save_tab_snapshot,
 )
@@ -122,6 +126,19 @@ class BrowserHistoryRecord(BaseModel):
     visit_count: int
     first_visited_at: str
     last_visited_at: str
+
+
+class BookmarkCreate(BaseModel):
+    url: str = Field(min_length=1, max_length=4000)
+    title: str = ""
+
+
+class BookmarkRecord(BaseModel):
+    id: int
+    url: str
+    title: str
+    created_at: str
+    updated_at: str
 
 
 class WorkspaceSnapshotRecord(BaseModel):
@@ -840,6 +857,31 @@ async def delete_history(record_id: int) -> dict[str, str | int]:
     deleted = delete_browser_history_entry(record_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="History entry not found")
+    return {"status": "ok", "id": record_id}
+
+
+@app.post("/api/storage/bookmarks", response_model=BookmarkRecord)
+async def save_bookmark_endpoint(request: BookmarkCreate) -> BookmarkRecord:
+    saved = save_bookmark(request.url, request.title)
+    return BookmarkRecord(**saved)
+
+
+@app.get("/api/storage/bookmarks", response_model=list[BookmarkRecord])
+async def list_bookmarks_endpoint(limit: int = 50) -> list[BookmarkRecord]:
+    return [BookmarkRecord(**record) for record in list_bookmarks(limit)]
+
+
+@app.get("/api/storage/bookmarks/by-url", response_model=BookmarkRecord | None)
+async def get_bookmark_by_url_endpoint(url: str) -> BookmarkRecord | None:
+    record = get_bookmark_by_url(url)
+    return BookmarkRecord(**record) if record else None
+
+
+@app.delete("/api/storage/bookmarks/{record_id}")
+async def delete_bookmark_endpoint(record_id: int) -> dict[str, str | int]:
+    deleted = delete_bookmark(record_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Bookmark not found")
     return {"status": "ok", "id": record_id}
 
 

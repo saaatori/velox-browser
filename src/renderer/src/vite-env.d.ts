@@ -23,6 +23,7 @@ type StorageSummary = {
   workspace_count: number
   search_agent_count?: number
   history_count?: number
+  bookmark_count?: number
   latest_snapshot_at: string | null
   latest_closed_at: string | null
   latest_workspace: {
@@ -39,6 +40,11 @@ type StorageSummary = {
     title: string
     url: string
     last_visited_at: string
+  } | null
+  latest_bookmark?: {
+    title: string
+    url: string
+    updated_at: string
   } | null
 }
 
@@ -61,6 +67,14 @@ type BrowserHistoryRecord = {
   visit_count: number
   first_visited_at: string
   last_visited_at: string
+}
+
+type BookmarkRecord = {
+  id: number
+  url: string
+  title: string
+  created_at: string
+  updated_at: string
 }
 
 type WorkspaceRecord = {
@@ -182,6 +196,10 @@ interface Window {
       restoreClosed: (recordId: number) => Promise<HibernatedTabRecord>
       listHistory: (limit?: number) => Promise<BrowserHistoryRecord[]>
       deleteHistory: (recordId: number) => Promise<Record<string, unknown>>
+      listBookmarks: (limit?: number) => Promise<BookmarkRecord[]>
+      getBookmarkByUrl: (url: string) => Promise<BookmarkRecord | null>
+      saveBookmark: (payload: { url: string; title: string }) => Promise<BookmarkRecord>
+      deleteBookmark: (recordId: number) => Promise<Record<string, unknown>>
       listWorkspaces: (limit?: number) => Promise<WorkspaceRecord[]>
       getWorkspace: (recordId: number) => Promise<WorkspaceRecord>
       saveWorkspace: (payload: { name: string; snapshot: { groups: Array<{ name: string; description: string; tabs: string[] }>; duplicate_sets: string[][]; suggested_hibernating: string[]; strategy: string }; tabs: Array<{ id: string; url: string; title: string; text: string; is_start_page: boolean; group_name?: string | null }>; activeTabId: string | null }) => Promise<WorkspaceRecord>

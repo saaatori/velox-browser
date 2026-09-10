@@ -132,6 +132,17 @@ def _create_connection() -> sqlite3.Connection:
 
         CREATE INDEX IF NOT EXISTS idx_browser_history_last_visited_at
             ON browser_history(last_visited_at DESC);
+
+        CREATE TABLE IF NOT EXISTS bookmarks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_bookmarks_updated_at
+            ON bookmarks(updated_at DESC);
         """
     )
     return connection
@@ -635,6 +646,77 @@ def delete_browser_history_entry(record_id: int) -> bool:
     return cursor.rowcount > 0
 
 
+def save_bookmark(url: str, title: str) -> dict[str, Any]:
+    updated_at = now_iso()
+    clean_url = url.strip()
+    clean_title = title.strip() or clean_url
+    connection = get_connection()
+    with _lock:
+        connection.execute(
+            """
+            INSERT INTO bookmarks (url, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(url) DO UPDATE SET
+                title = excluded.title,
+                updated_at = excluded.updated_at
+            """,
+            (clean_url, clean_title, updated_at, updated_at),
+        )
+        connection.commit()
+        row = connection.execute(
+            """
+            SELECT id, url, title, created_at, updated_at
+            FROM bookmarks
+            WHERE url = ?
+            """,
+            (clean_url,),
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def get_bookmark_by_url(url: str) -> dict[str, Any] | None:
+    connection = get_connection()
+    with _lock:
+        row = connection.execute(
+            """
+            SELECT id, url, title, created_at, updated_at
+            FROM bookmarks
+            WHERE url = ?
+            """,
+            (url.strip(),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_bookmarks(limit: int = 50) -> list[dict[str, Any]]:
+    connection = get_connection()
+    with _lock:
+        rows = connection.execute(
+            """
+            SELECT id, url, title, created_at, updated_at
+            FROM bookmarks
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_bookmark(record_id: int) -> bool:
+    connection = get_connection()
+    with _lock:
+        cursor = connection.execute(
+            """
+            DELETE FROM bookmarks
+            WHERE id = ?
+            """,
+            (record_id,),
+        )
+        connection.commit()
+    return cursor.rowcount > 0
+
+
 def restore_hibernated_tab(record_id: int) -> dict[str, Any] | None:
     restored_at = now_iso()
     connection = get_connection()
@@ -673,6 +755,7 @@ def list_summary() -> dict[str, Any]:
         workspace_count = connection.execute("SELECT COUNT(*) AS value FROM workspace_snapshots").fetchone()["value"]
         search_agent_count = connection.execute("SELECT COUNT(*) AS value FROM search_agent_runs").fetchone()["value"]
         history_count = connection.execute("SELECT COUNT(*) AS value FROM browser_history").fetchone()["value"]
+        bookmark_count = connection.execute("SELECT COUNT(*) AS value FROM bookmarks").fetchone()["value"]
         latest_snapshot = connection.execute(
             "SELECT captured_at FROM tab_snapshots ORDER BY captured_at DESC LIMIT 1"
         ).fetchone()
@@ -691,6 +774,9 @@ def list_summary() -> dict[str, Any]:
         latest_history = connection.execute(
             "SELECT title, url, last_visited_at FROM browser_history ORDER BY last_visited_at DESC LIMIT 1"
         ).fetchone()
+        latest_bookmark = connection.execute(
+            "SELECT title, url, updated_at FROM bookmarks ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
 
     latest_organize_payload = None
     if latest_organize:
@@ -708,6 +794,7 @@ def list_summary() -> dict[str, Any]:
         "workspace_count": workspace_count,
         "search_agent_count": search_agent_count,
         "history_count": history_count,
+        "bookmark_count": bookmark_count,
         "latest_snapshot_at": latest_snapshot["captured_at"] if latest_snapshot else None,
         "latest_closed_at": latest_closed["created_at"] if latest_closed else None,
         "latest_workspace": {
@@ -730,4 +817,9 @@ def list_summary() -> dict[str, Any]:
             "url": latest_history["url"],
             "last_visited_at": latest_history["last_visited_at"],
         } if latest_history else None,
+        "latest_bookmark": {
+            "title": latest_bookmark["title"],
+            "url": latest_bookmark["url"],
+            "updated_at": latest_bookmark["updated_at"],
+        } if latest_bookmark else None,
     }
