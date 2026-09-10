@@ -21,6 +21,8 @@ type StorageSummary = {
   hibernated_count: number
   closed_count: number
   workspace_count: number
+  search_agent_count?: number
+  history_count?: number
   latest_snapshot_at: string | null
   latest_closed_at: string | null
   latest_workspace: {
@@ -32,6 +34,11 @@ type StorageSummary = {
     created_at: string
     group_count: number
     duplicate_set_count: number
+  } | null
+  latest_history?: {
+    title: string
+    url: string
+    last_visited_at: string
   } | null
 }
 
@@ -45,6 +52,15 @@ type HibernatedTabRecord = {
   origin_batch_id: string | null
   restored_at: string | null
   created_at: string
+}
+
+type BrowserHistoryRecord = {
+  id: number
+  url: string
+  title: string
+  visit_count: number
+  first_visited_at: string
+  last_visited_at: string
 }
 
 type WorkspaceRecord = {
@@ -99,6 +115,11 @@ type DomSnapshot = {
   elements: DomElementInfo[]
 }
 
+type MarkdownExportPayload = {
+  defaultFilename: string
+  content: string
+}
+
 type BrowserAction =
   | { action: 'navigate'; params: { url: string } }
   | { action: 'search'; params: { query: string; engine?: 'google' | 'bing' | 'baidu' | 'duckduckgo' } }
@@ -115,6 +136,12 @@ type BrowserAction =
 interface Window {
   velox: {
     getBackendConfig: () => Promise<{ baseUrl: string }>
+    layout: {
+      setSidebarCollapsed: (collapsed: boolean) => Promise<{ sidebarWidth: number }>
+    }
+    reports: {
+      exportMarkdown: (payload: MarkdownExportPayload) => Promise<{ canceled: boolean; filePath: string | null }>
+    }
     search: {
       getEngine: () => Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>
       setEngine: (engine: 'google' | 'bing' | 'baidu' | 'duckduckgo') => Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>
@@ -153,9 +180,12 @@ interface Window {
       restoreHibernated: (recordId: number) => Promise<HibernatedTabRecord>
       listClosed: (limit?: number) => Promise<HibernatedTabRecord[]>
       restoreClosed: (recordId: number) => Promise<HibernatedTabRecord>
+      listHistory: (limit?: number) => Promise<BrowserHistoryRecord[]>
+      deleteHistory: (recordId: number) => Promise<Record<string, unknown>>
       listWorkspaces: (limit?: number) => Promise<WorkspaceRecord[]>
       getWorkspace: (recordId: number) => Promise<WorkspaceRecord>
       saveWorkspace: (payload: { name: string; snapshot: { groups: Array<{ name: string; description: string; tabs: string[] }>; duplicate_sets: string[][]; suggested_hibernating: string[]; strategy: string }; tabs: Array<{ id: string; url: string; title: string; text: string; is_start_page: boolean; group_name?: string | null }>; activeTabId: string | null }) => Promise<WorkspaceRecord>
+      deleteWorkspace: (recordId: number) => Promise<Record<string, unknown>>
       hibernateTab: (payload: { tab: TabSnapshot; reason: string; originBatchId?: string | null }) => Promise<Record<string, unknown>>
     }
   }

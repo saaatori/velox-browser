@@ -107,6 +107,31 @@ def _create_connection() -> sqlite3.Connection:
             api_key TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS search_agent_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task TEXT NOT NULL,
+            query TEXT NOT NULL,
+            source_count INTEGER NOT NULL DEFAULT 0,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_search_agent_runs_created_at
+            ON search_agent_runs(created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS browser_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            visit_count INTEGER NOT NULL DEFAULT 1,
+            first_visited_at TEXT NOT NULL,
+            last_visited_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_browser_history_last_visited_at
+            ON browser_history(last_visited_at DESC);
         """
     )
     return connection
@@ -442,6 +467,174 @@ def get_workspace_snapshot(record_id: int) -> dict[str, Any] | None:
     }
 
 
+def delete_workspace_snapshot(record_id: int) -> bool:
+    connection = get_connection()
+    with _lock:
+        cursor = connection.execute(
+            """
+            DELETE FROM workspace_snapshots
+            WHERE id = ?
+            """,
+            (record_id,),
+        )
+        connection.commit()
+    return cursor.rowcount > 0
+
+
+def save_search_agent_run(
+    task: str,
+    query: str,
+    sources: list[dict[str, Any]],
+    synthesis: dict[str, Any],
+) -> dict[str, Any]:
+    created_at = now_iso()
+    payload = {
+        "task": task,
+        "query": query,
+        "sources": sources,
+        "synthesis": synthesis,
+    }
+    connection = get_connection()
+    with _lock:
+        cursor = connection.execute(
+            """
+            INSERT INTO search_agent_runs (
+                task, query, source_count, payload_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task,
+                query,
+                len(sources),
+                json.dumps(payload, ensure_ascii=False),
+                created_at,
+                created_at,
+            ),
+        )
+        connection.commit()
+    return {
+        "id": cursor.lastrowid,
+        "task": task,
+        "query": query,
+        "source_count": len(sources),
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
+
+
+def list_search_agent_runs(limit: int = 20) -> list[dict[str, Any]]:
+    connection = get_connection()
+    with _lock:
+        rows = connection.execute(
+            """
+            SELECT id, task, query, source_count, created_at, updated_at
+            FROM search_agent_runs
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_search_agent_run(record_id: int) -> dict[str, Any] | None:
+    connection = get_connection()
+    with _lock:
+        row = connection.execute(
+            """
+            SELECT id, task, query, source_count, payload_json, created_at, updated_at
+            FROM search_agent_runs
+            WHERE id = ?
+            """,
+            (record_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    record = dict(row)
+    payload = json.loads(record["payload_json"])
+    return {
+        "id": record["id"],
+        "task": record["task"],
+        "query": record["query"],
+        "source_count": record["source_count"],
+        "created_at": record["created_at"],
+        "updated_at": record["updated_at"],
+        **payload,
+    }
+
+
+def delete_search_agent_run(record_id: int) -> bool:
+    connection = get_connection()
+    with _lock:
+        cursor = connection.execute(
+            """
+            DELETE FROM search_agent_runs
+            WHERE id = ?
+            """,
+            (record_id,),
+        )
+        connection.commit()
+    return cursor.rowcount > 0
+
+
+def save_browser_history_entry(url: str, title: str) -> dict[str, Any]:
+    visited_at = now_iso()
+    clean_url = url.strip()
+    clean_title = title.strip() or clean_url
+    connection = get_connection()
+    with _lock:
+        connection.execute(
+            """
+            INSERT INTO browser_history (url, title, visit_count, first_visited_at, last_visited_at)
+            VALUES (?, ?, 1, ?, ?)
+            ON CONFLICT(url) DO UPDATE SET
+                title = excluded.title,
+                visit_count = browser_history.visit_count + 1,
+                last_visited_at = excluded.last_visited_at
+            """,
+            (clean_url, clean_title, visited_at, visited_at),
+        )
+        connection.commit()
+        row = connection.execute(
+            """
+            SELECT id, url, title, visit_count, first_visited_at, last_visited_at
+            FROM browser_history
+            WHERE url = ?
+            """,
+            (clean_url,),
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def list_browser_history(limit: int = 50) -> list[dict[str, Any]]:
+    connection = get_connection()
+    with _lock:
+        rows = connection.execute(
+            """
+            SELECT id, url, title, visit_count, first_visited_at, last_visited_at
+            FROM browser_history
+            ORDER BY last_visited_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_browser_history_entry(record_id: int) -> bool:
+    connection = get_connection()
+    with _lock:
+        cursor = connection.execute(
+            """
+            DELETE FROM browser_history
+            WHERE id = ?
+            """,
+            (record_id,),
+        )
+        connection.commit()
+    return cursor.rowcount > 0
+
+
 def restore_hibernated_tab(record_id: int) -> dict[str, Any] | None:
     restored_at = now_iso()
     connection = get_connection()
@@ -478,6 +671,8 @@ def list_summary() -> dict[str, Any]:
         hibernated_count = connection.execute("SELECT COUNT(*) AS value FROM hibernated_tabs").fetchone()["value"]
         closed_count = connection.execute("SELECT COUNT(*) AS value FROM closed_tabs").fetchone()["value"]
         workspace_count = connection.execute("SELECT COUNT(*) AS value FROM workspace_snapshots").fetchone()["value"]
+        search_agent_count = connection.execute("SELECT COUNT(*) AS value FROM search_agent_runs").fetchone()["value"]
+        history_count = connection.execute("SELECT COUNT(*) AS value FROM browser_history").fetchone()["value"]
         latest_snapshot = connection.execute(
             "SELECT captured_at FROM tab_snapshots ORDER BY captured_at DESC LIMIT 1"
         ).fetchone()
@@ -489,6 +684,12 @@ def list_summary() -> dict[str, Any]:
         ).fetchone()
         latest_workspace = connection.execute(
             "SELECT name, created_at FROM workspace_snapshots ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        latest_search_agent = connection.execute(
+            "SELECT task, source_count, created_at FROM search_agent_runs ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        latest_history = connection.execute(
+            "SELECT title, url, last_visited_at FROM browser_history ORDER BY last_visited_at DESC LIMIT 1"
         ).fetchone()
 
     latest_organize_payload = None
@@ -505,6 +706,8 @@ def list_summary() -> dict[str, Any]:
         "hibernated_count": hibernated_count,
         "closed_count": closed_count,
         "workspace_count": workspace_count,
+        "search_agent_count": search_agent_count,
+        "history_count": history_count,
         "latest_snapshot_at": latest_snapshot["captured_at"] if latest_snapshot else None,
         "latest_closed_at": latest_closed["created_at"] if latest_closed else None,
         "latest_workspace": {
@@ -517,4 +720,14 @@ def list_summary() -> dict[str, Any]:
             "group_count": len(latest_organize_payload.get("groups", [])) if latest_organize_payload else 0,
             "duplicate_set_count": len(latest_organize_payload.get("duplicate_sets", [])) if latest_organize_payload else 0,
         } if latest_organize else None,
+        "latest_search_agent": {
+            "task": latest_search_agent["task"],
+            "source_count": latest_search_agent["source_count"],
+            "created_at": latest_search_agent["created_at"],
+        } if latest_search_agent else None,
+        "latest_history": {
+            "title": latest_history["title"],
+            "url": latest_history["url"],
+            "last_visited_at": latest_history["last_visited_at"],
+        } if latest_history else None,
     }

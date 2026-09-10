@@ -3,7 +3,9 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
+  Download,
   Globe2,
+  History,
   LayoutPanelLeft,
   Plus,
   RefreshCw,
@@ -11,6 +13,7 @@ import {
   Settings2,
   Sparkles,
   Square,
+  Trash2,
   WandSparkles,
   X
 } from 'lucide-react'
@@ -57,6 +60,36 @@ type SearchAgentResult = {
   sources: string[]
   next_actions: string[]
   provider: string
+  comparison_rows?: SearchAgentComparisonRow[]
+}
+
+type SearchAgentComparisonRow = {
+  source: string
+  title: string
+  finding: string
+  evidence: string
+  gaps: string
+  confidence: string
+}
+
+type SearchAgentSourceNote = {
+  url: string
+  title: string
+  answer: string
+}
+
+type SearchAgentRunRecord = {
+  id: number
+  task: string
+  query: string
+  source_count: number
+  created_at: string
+  updated_at: string
+}
+
+type SearchAgentRunDetail = SearchAgentRunRecord & {
+  sources: SearchAgentSourceNote[]
+  synthesis: SearchAgentResult
 }
 
 type AISettings = {
@@ -81,6 +114,8 @@ type StorageSummary = {
   hibernated_count: number
   closed_count: number
   workspace_count: number
+  search_agent_count?: number
+  history_count?: number
   latest_snapshot_at: string | null
   latest_closed_at: string | null
   latest_workspace: {
@@ -92,6 +127,11 @@ type StorageSummary = {
     created_at: string
     group_count: number
     duplicate_set_count: number
+  } | null
+  latest_history?: {
+    title: string
+    url: string
+    last_visited_at: string
   } | null
 }
 
@@ -108,6 +148,15 @@ type HibernatedTabRecord = {
 }
 
 type ClosedTabRecord = HibernatedTabRecord
+
+type BrowserHistoryRecord = {
+  id: number
+  url: string
+  title: string
+  visit_count: number
+  first_visited_at: string
+  last_visited_at: string
+}
 
 type WorkspaceRecord = {
   id: number
@@ -135,17 +184,95 @@ type WorkspaceRecord = {
   active_tab_id?: string | null
 }
 
+function cleanMarkdownCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>').trim() || '-'
+}
+
+function cleanReportFilename(value: string): string {
+  const cleaned = value
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 70)
+  return `${cleaned || 'search-agent-report'}.md`
+}
+
+function buildSearchAgentReportMarkdown(payload: {
+  task: string
+  query: string
+  synthesis: SearchAgentResult
+  sources: SearchAgentSourceNote[]
+  savedId: number | null
+}): string {
+  const generatedAt = new Date().toLocaleString()
+  const lines = [
+    `# Velox 搜索代理报告`,
+    '',
+    `- 任务：${payload.task}`,
+    `- 搜索词：${payload.query}`,
+    `- 生成时间：${generatedAt}`,
+    `- 记录编号：${payload.savedId ? `#${payload.savedId}` : '未保存'}`,
+    `- Provider：${payload.synthesis.provider}`,
+    '',
+    '## 阶段性结论',
+    '',
+    payload.synthesis.answer.trim() || '暂无结论。',
+    '',
+  ]
+
+  const comparisonRows = payload.synthesis.comparison_rows ?? []
+  if (comparisonRows.length > 0) {
+    lines.push(
+      '## 来源对比',
+      '',
+      '| 来源 | 主要发现 | 证据摘要 | 待核验点 | 可信度 |',
+      '| --- | --- | --- | --- | --- |',
+      ...comparisonRows.map((row) => (
+        `| ${cleanMarkdownCell(row.title || row.source)} | ${cleanMarkdownCell(row.finding)} | ${cleanMarkdownCell(row.evidence)} | ${cleanMarkdownCell(row.gaps)} | ${cleanMarkdownCell(row.confidence)} |`
+      )),
+      '',
+    )
+  }
+
+  if (payload.sources.length > 0) {
+    lines.push('## 来源笔记', '')
+    payload.sources.forEach((source, index) => {
+      lines.push(
+        `### ${index + 1}. ${source.title || source.url}`,
+        '',
+        `- URL：${source.url}`,
+        '',
+        source.answer.trim() || '暂无摘录。',
+        '',
+      )
+    })
+  }
+
+  if (payload.synthesis.sources.length > 0) {
+    lines.push('## 来源链接', '')
+    payload.synthesis.sources.forEach((source) => {
+      lines.push(`- ${source}`)
+    })
+    lines.push('')
+  }
+
+  return `${lines.join('\n').trim()}\n`
+}
+
 function App() {
   const [backendState, setBackendState] = useState<BackendState>('checking')
   const [backendUrl, setBackendUrl] = useState('')
   const [tabs, setTabs] = useState<BrowserTabState[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [address, setAddress] = useState('')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('velox.sidebarCollapsed') === 'true')
   const [searchEngine, setSearchEngine] = useState<SearchEngine>('google')
   const [startupPage, setStartupPage] = useState<StartupPage>('velox')
   const [startupUrl, setStartupUrl] = useState('')
   const [organizeOpen, setOrganizeOpen] = useState(false)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
   const [assistantInput, setAssistantInput] = useState('')
   const [assistantSending, setAssistantSending] = useState(false)
@@ -163,6 +290,13 @@ function App() {
   const [searchAgentStatus, setSearchAgentStatus] = useState('')
   const [searchAgentPlan, setSearchAgentPlan] = useState<SearchAgentPlan | null>(null)
   const [searchAgentResult, setSearchAgentResult] = useState<SearchAgentResult | null>(null)
+  const [searchAgentDetail, setSearchAgentDetail] = useState<SearchAgentResult | null>(null)
+  const [searchAgentSourceNotes, setSearchAgentSourceNotes] = useState<SearchAgentSourceNote[]>([])
+  const [searchAgentSynthesis, setSearchAgentSynthesis] = useState<SearchAgentResult | null>(null)
+  const [searchAgentSearchTabId, setSearchAgentSearchTabId] = useState<string | null>(null)
+  const [searchAgentHistory, setSearchAgentHistory] = useState<SearchAgentRunRecord[]>([])
+  const [searchAgentSavedId, setSearchAgentSavedId] = useState<number | null>(null)
+  const [searchAgentExportPath, setSearchAgentExportPath] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState('')
@@ -181,6 +315,7 @@ function App() {
   const [storageSummary, setStorageSummary] = useState<StorageSummary | null>(null)
   const [hibernatedTabs, setHibernatedTabs] = useState<HibernatedTabRecord[]>([])
   const [closedTabs, setClosedTabs] = useState<ClosedTabRecord[]>([])
+  const [browserHistory, setBrowserHistory] = useState<BrowserHistoryRecord[]>([])
   const [savedWorkspaces, setSavedWorkspaces] = useState<WorkspaceRecord[]>([])
   const [workspaceName, setWorkspaceName] = useState('')
   const [workspaceSaving, setWorkspaceSaving] = useState(false)
@@ -210,19 +345,49 @@ function App() {
     }
     return Array.from(groups.entries())
   }, [tabs])
+  const searchAgentInspectedUrls = useMemo(
+    () => new Set(searchAgentSourceNotes.map((source) => source.url)),
+    [searchAgentSourceNotes]
+  )
+  const searchAgentCandidateSources = useMemo(() => {
+    const blockedHosts = new Set(['www.google.com', 'google.com', 'www.bing.com', 'bing.com', 'www.baidu.com', 'baidu.com', 'duckduckgo.com'])
+    return (searchAgentResult?.sources ?? []).filter((source) => {
+      try {
+        const url = new URL(source)
+        return !blockedHosts.has(url.hostname) && !url.pathname.startsWith('/search')
+      } catch {
+        return false
+      }
+    })
+  }, [searchAgentResult])
+
+  const refreshSearchAgentHistory = useCallback(async () => {
+    if (!backendUrl) return
+    const response = await fetch(`${backendUrl}/api/storage/search-agent/runs?limit=6`)
+    if (!response.ok) throw new Error('搜索代理历史读取失败')
+    const history = await response.json() as SearchAgentRunRecord[]
+    setSearchAgentHistory(history)
+  }, [backendUrl])
 
   const refreshStorageState = useCallback(async () => {
-    const [summary, hibernated, closed, workspaces] = await Promise.all([
+    const [summary, hibernated, closed, history, workspaces] = await Promise.all([
       window.velox.storage.getSummary(),
       window.velox.storage.listHibernated(8),
       window.velox.storage.listClosed(8),
+      window.velox.storage.listHistory(20),
       window.velox.storage.listWorkspaces(8)
     ])
     setStorageSummary(summary)
     setHibernatedTabs(hibernated)
     setClosedTabs(closed)
+    setBrowserHistory(history)
     setSavedWorkspaces(workspaces)
   }, [])
+
+  useEffect(() => {
+    localStorage.setItem('velox.sidebarCollapsed', String(sidebarCollapsed))
+    void window.velox.layout.setSidebarCollapsed(sidebarCollapsed)
+  }, [sidebarCollapsed])
 
   useEffect(() => {
     let cancelled = false
@@ -318,6 +483,13 @@ function App() {
   }, [backendState, backendUrl])
 
   useEffect(() => {
+    if (backendState !== 'online' || !backendUrl) return
+    void refreshSearchAgentHistory().catch(() => {
+      setSearchAgentHistory([])
+    })
+  }, [backendState, backendUrl, refreshSearchAgentHistory])
+
+  useEffect(() => {
     setAddress(activeTab?.url ?? '')
   }, [activeTab?.id, activeTab?.url])
 
@@ -334,7 +506,7 @@ function App() {
       }
       if (event.key.toLowerCase() === 'w' && activeTabId) {
         event.preventDefault()
-        void window.velox.tabs.close(activeTabId)
+        void closeBrowserTab(activeTabId)
       }
     }
     window.addEventListener('keydown', handleShortcut)
@@ -350,6 +522,32 @@ function App() {
     event.preventDefault()
     const input = event.currentTarget.elements.namedItem('search') as HTMLInputElement
     if (input.value.trim()) void window.velox.tabs.navigate(input.value)
+  }
+
+  async function closeBrowserTab(tabId: string) {
+    try {
+      await window.velox.tabs.close(tabId)
+    } finally {
+      const state = await window.velox.tabs.getState()
+      setTabs(state.tabs)
+      setActiveTabId(state.activeTabId)
+    }
+  }
+
+  function toggleSidebarPanel(panel: 'search' | 'organize' | 'workspace' | 'history' | 'settings') {
+    const nextSearch = panel === 'search' ? !searchAgentOpen : false
+    const nextOrganize = panel === 'organize' ? !organizeOpen : false
+    const nextWorkspace = panel === 'workspace' ? !workspaceOpen : false
+    const nextHistory = panel === 'history' ? !historyOpen : false
+    const nextSettings = panel === 'settings' ? !settingsOpen : false
+    setSearchAgentOpen(nextSearch)
+    setOrganizeOpen(nextOrganize)
+    setWorkspaceOpen(nextWorkspace)
+    setHistoryOpen(nextHistory)
+    setSettingsOpen(nextSettings)
+    if ((nextWorkspace || nextHistory) && backendState === 'online') {
+      void refreshStorageState()
+    }
   }
 
   function tabLabel(tab: BrowserTabState): string {
@@ -450,6 +648,12 @@ function App() {
     setSearchAgentRunning(true)
     setSearchAgentError('')
     setSearchAgentResult(null)
+    setSearchAgentDetail(null)
+    setSearchAgentSourceNotes([])
+    setSearchAgentSynthesis(null)
+    setSearchAgentSearchTabId(null)
+    setSearchAgentSavedId(null)
+    setSearchAgentExportPath(null)
     try {
       const config = backendUrl ? { baseUrl: backendUrl } : await window.velox.getBackendConfig()
       setSearchAgentStatus('规划搜索')
@@ -467,6 +671,8 @@ function App() {
       setSearchAgentStatus('执行搜索')
       await window.velox.agent.executeAction(plan.action)
       await waitForActivePageSettled()
+      const searchState = await window.velox.tabs.getState()
+      setSearchAgentSearchTabId(searchState.activeTabId)
       setSearchAgentStatus('读取结果页')
       const snapshot = await window.velox.dom.getSnapshot()
       setSearchAgentStatus('生成摘要')
@@ -484,6 +690,211 @@ function App() {
       setSearchAgentStatus('完成')
     } catch (error) {
       setSearchAgentError(error instanceof Error ? error.message : '搜索代理暂时不可用')
+      setSearchAgentStatus('')
+    } finally {
+      setSearchAgentRunning(false)
+    }
+  }
+
+  async function inspectSearchSource(sourceUrl?: string) {
+    const task = searchAgentInput.trim()
+    const source = sourceUrl ?? searchAgentCandidateSources.find((candidate) => !searchAgentInspectedUrls.has(candidate)) ?? searchAgentCandidateSources[0]
+    if (!task || !source || searchAgentRunning) return
+    setSearchAgentRunning(true)
+    setSearchAgentError('')
+    try {
+      const config = backendUrl ? { baseUrl: backendUrl } : await window.velox.getBackendConfig()
+      setSearchAgentStatus('打开来源')
+      await window.velox.tabs.create(source)
+      await waitForActivePageSettled(10000)
+      setSearchAgentStatus('提取详情')
+      const snapshot = await window.velox.dom.getSnapshot()
+      setSearchAgentStatus('分析来源')
+      const response = await fetch(`${config.baseUrl}/api/search-agent/inspect-source`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task,
+          query: searchAgentPlan?.query ?? task,
+          source_url: source,
+          snapshot
+        })
+      })
+      if (!response.ok) {
+        const detail = await response.text()
+        throw new Error(detail || '来源页面分析失败')
+      }
+      const result = await response.json() as SearchAgentResult
+      setSearchAgentDetail(result)
+      setSearchAgentSourceNotes((current) => {
+        const note = { url: source, title: snapshot.title || source, answer: result.answer }
+        const index = current.findIndex((item) => item.url === source)
+        if (index < 0) return [...current, note]
+        return current.map((item, itemIndex) => itemIndex === index ? note : item)
+      })
+      setSearchAgentStatus('完成')
+    } catch (error) {
+      setSearchAgentError(error instanceof Error ? error.message : '来源页面分析失败')
+      setSearchAgentStatus('')
+    } finally {
+      setSearchAgentRunning(false)
+    }
+  }
+
+  function handleSearchAgentNextAction(action: string) {
+    if (action.includes('打开') && action.includes('搜索结果')) {
+      void inspectSearchSource()
+      return
+    }
+    if (action.includes('返回搜索结果页')) {
+      if (searchAgentSearchTabId) void window.velox.tabs.activate(searchAgentSearchTabId)
+      return
+    }
+    setSearchAgentInput(action)
+  }
+
+  async function synthesizeSearchSources() {
+    const task = searchAgentInput.trim()
+    if (!task || searchAgentSourceNotes.length === 0 || searchAgentRunning) return
+    setSearchAgentRunning(true)
+    setSearchAgentError('')
+    setSearchAgentExportPath(null)
+    try {
+      const config = backendUrl ? { baseUrl: backendUrl } : await window.velox.getBackendConfig()
+      setSearchAgentStatus('汇总来源')
+      const response = await fetch(`${config.baseUrl}/api/search-agent/synthesize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task,
+          query: searchAgentPlan?.query ?? task,
+          sources: searchAgentSourceNotes
+        })
+      })
+      if (!response.ok) {
+        const detail = await response.text()
+        throw new Error(detail || '来源汇总失败')
+      }
+      const result = await response.json() as SearchAgentResult
+      setSearchAgentSynthesis(result)
+      const saveResponse = await fetch(`${config.baseUrl}/api/storage/search-agent/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task,
+          query: searchAgentPlan?.query ?? task,
+          sources: searchAgentSourceNotes,
+          synthesis: result
+        })
+      })
+      if (saveResponse.ok) {
+        const saved = await saveResponse.json() as SearchAgentRunRecord
+        setSearchAgentSavedId(saved.id)
+        await refreshSearchAgentHistory()
+      }
+      setSearchAgentStatus('完成')
+    } catch (error) {
+      setSearchAgentError(error instanceof Error ? error.message : '来源汇总失败')
+      setSearchAgentStatus('')
+    } finally {
+      setSearchAgentRunning(false)
+    }
+  }
+
+  async function loadSearchAgentRun(recordId: number) {
+    if (!backendUrl || searchAgentRunning) return
+    setSearchAgentRunning(true)
+    setSearchAgentError('')
+    setSearchAgentExportPath(null)
+    try {
+      setSearchAgentStatus('读取记录')
+      const response = await fetch(`${backendUrl}/api/storage/search-agent/runs/${recordId}`)
+      if (!response.ok) {
+        const detail = await response.text()
+        throw new Error(detail || '搜索代理记录读取失败')
+      }
+      const record = await response.json() as SearchAgentRunDetail
+      setSearchAgentInput(record.task)
+      setSearchAgentPlan({
+        query: record.query,
+        engine: searchEngine,
+        rationale: '从历史记录恢复',
+        action: { action: 'search', params: { query: record.query, engine: searchEngine } }
+      })
+      setSearchAgentSourceNotes(record.sources)
+      setSearchAgentSynthesis(record.synthesis)
+      setSearchAgentDetail(null)
+      setSearchAgentResult(null)
+      setSearchAgentSavedId(record.id)
+      setSearchAgentStatus('完成')
+    } catch (error) {
+      setSearchAgentError(error instanceof Error ? error.message : '搜索代理记录读取失败')
+      setSearchAgentStatus('')
+    } finally {
+      setSearchAgentRunning(false)
+    }
+  }
+
+  async function deleteSearchAgentRun(recordId: number) {
+    if (!backendUrl || searchAgentRunning) return
+    if (!window.confirm('删除这条搜索记录？')) return
+    const previousHistory = searchAgentHistory
+    const previousSavedId = searchAgentSavedId
+    setSearchAgentRunning(true)
+    setSearchAgentError('')
+    setSearchAgentHistory((current) => current.filter((record) => record.id !== recordId))
+    if (searchAgentSavedId === recordId) {
+      setSearchAgentSavedId(null)
+    }
+    try {
+      setSearchAgentStatus('删除记录')
+      const response = await fetch(`${backendUrl}/api/storage/search-agent/runs/${recordId}`, {
+        method: 'DELETE'
+      })
+      if (!response.ok) {
+        const detail = await response.text()
+        throw new Error(detail || '搜索代理记录删除失败')
+      }
+      await refreshSearchAgentHistory()
+      setSearchAgentStatus('完成')
+    } catch (error) {
+      setSearchAgentHistory(previousHistory)
+      setSearchAgentSavedId(previousSavedId)
+      setSearchAgentError(error instanceof Error ? error.message : '搜索代理记录删除失败')
+      setSearchAgentStatus('')
+    } finally {
+      setSearchAgentRunning(false)
+    }
+  }
+
+  async function exportSearchAgentReport() {
+    const task = searchAgentInput.trim()
+    if (!task || !searchAgentSynthesis || searchAgentRunning) return
+    setSearchAgentRunning(true)
+    setSearchAgentError('')
+    setSearchAgentExportPath(null)
+    try {
+      setSearchAgentStatus('导出报告')
+      const query = searchAgentPlan?.query ?? task
+      const content = buildSearchAgentReportMarkdown({
+        task,
+        query,
+        synthesis: searchAgentSynthesis,
+        sources: searchAgentSourceNotes,
+        savedId: searchAgentSavedId
+      })
+      const result = await window.velox.reports.exportMarkdown({
+        defaultFilename: cleanReportFilename(`velox-${task}`),
+        content
+      })
+      if (!result.canceled && result.filePath) {
+        setSearchAgentExportPath(result.filePath)
+        setSearchAgentStatus('完成')
+      } else {
+        setSearchAgentStatus('')
+      }
+    } catch (error) {
+      setSearchAgentError(error instanceof Error ? error.message : '搜索代理报告导出失败')
       setSearchAgentStatus('')
     } finally {
       setSearchAgentRunning(false)
@@ -577,6 +988,43 @@ function App() {
     }
   }
 
+  async function deleteWorkspace(recordId: number) {
+    if (!window.confirm('删除这个已保存工作区？')) return
+    const previousWorkspaces = savedWorkspaces
+    setStorageBusy(true)
+    setSavedWorkspaces((current) => current.filter((workspace) => workspace.id !== recordId))
+    try {
+      await window.velox.storage.deleteWorkspace(recordId)
+      await refreshStorageState()
+    } catch (error) {
+      setSavedWorkspaces(previousWorkspaces)
+      console.warn('Failed to delete workspace', error)
+      window.alert(error instanceof Error ? error.message : '工作区删除失败')
+    } finally {
+      setStorageBusy(false)
+    }
+  }
+
+  async function openHistoryEntry(url: string) {
+    await window.velox.tabs.create(url)
+    setHistoryOpen(false)
+  }
+
+  async function deleteHistoryEntry(recordId: number) {
+    const previousHistory = browserHistory
+    setStorageBusy(true)
+    setBrowserHistory((current) => current.filter((item) => item.id !== recordId))
+    try {
+      await window.velox.storage.deleteHistory(recordId)
+      await refreshStorageState()
+    } catch (error) {
+      setBrowserHistory(previousHistory)
+      window.alert(error instanceof Error ? error.message : '历史记录删除失败')
+    } finally {
+      setStorageBusy(false)
+    }
+  }
+
   async function hibernateActiveTab(tabId: string) {
     setHibernatingTabId(tabId)
     setStorageBusy(true)
@@ -625,10 +1073,19 @@ function App() {
 
   return (
     <main className="app-shell">
-      <aside className="sidebar">
+      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="brand">
           <div className="brand-mark"><Sparkles size={17} /></div>
-          <div><strong>velox</strong><span>AI browser</span></div>
+          <div className="brand-copy"><strong>Velox</strong><span>AI 浏览器</span></div>
+          <button
+            className="icon-button sidebar-toggle"
+            type="button"
+            aria-label={sidebarCollapsed ? '展开左侧功能区' : '收起左侧功能区'}
+            title={sidebarCollapsed ? '展开左侧功能区' : '收起左侧功能区'}
+            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          >
+            <LayoutPanelLeft size={15} />
+          </button>
         </div>
         <button className="new-tab-button" type="button" onClick={() => void window.velox.tabs.create()}>
           <Plus size={17} /><span>新建标签页</span><kbd>Ctrl T</kbd>
@@ -650,7 +1107,17 @@ function App() {
                       <Globe2 size={16} />
                       <span>{tabLabel(tab)}</span>
                     </button>
-                    <button className="tab-close" type="button" aria-label={`关闭${tabLabel(tab)}`} title="关闭标签页" onClick={() => void window.velox.tabs.close(tab.id)}>
+                    <button
+                      className="tab-close"
+                      type="button"
+                      aria-label={`关闭${tabLabel(tab)}`}
+                      title="关闭标签页"
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        void closeBrowserTab(tab.id)
+                      }}
+                    >
                       <X size={14} />
                     </button>
                   </div>
@@ -736,24 +1203,139 @@ function App() {
             {searchAgentResult && (
               <div className="search-agent-result">
                 <div className="assistant-message-content">{searchAgentResult.answer}</div>
-                {searchAgentResult.sources.length > 0 && (
+                {searchAgentCandidateSources.length > 0 && (
                   <div className="search-agent-sources">
-                    {searchAgentResult.sources.slice(0, 4).map((source) => (
+                    {searchAgentCandidateSources.slice(0, 5).map((source) => (
+                      <button type="button" key={source} onClick={() => void inspectSearchSource(source)} disabled={searchAgentRunning}>
+                        {searchAgentInspectedUrls.has(source) ? '已分析 · ' : ''}{source}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {searchAgentSourceNotes.length > 0 && (
+                  <div className="search-agent-actions">
+                    <button type="button" disabled={searchAgentRunning} onClick={() => void inspectSearchSource()}>
+                      打开下一个
+                    </button>
+                    <button type="button" disabled={searchAgentRunning} onClick={() => void synthesizeSearchSources()}>
+                      汇总来源
+                    </button>
+                  </div>
+                )}
+                {searchAgentResult.next_actions.length > 0 && (
+                  <div className="assistant-suggestions">
+                    {searchAgentResult.next_actions.map((action) => (
+                      <button type="button" key={action} disabled={searchAgentRunning} onClick={() => handleSearchAgentNextAction(action)}>
+                        {action}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {searchAgentSourceNotes.length > 0 && (
+              <div className="search-agent-card">
+                <span>已分析来源</span>
+                <strong>{searchAgentSourceNotes.length} 个来源</strong>
+                <small>{searchAgentSourceNotes.map((source) => source.title || source.url).join('；')}</small>
+              </div>
+            )}
+            {searchAgentDetail && (
+              <div className="search-agent-detail">
+                <div className="search-agent-card">
+                  <span>来源详情</span>
+                  <strong>{searchAgentDetail.provider}</strong>
+                </div>
+                <div className="assistant-message-content">{searchAgentDetail.answer}</div>
+                {searchAgentDetail.sources.length > 0 && (
+                  <div className="search-agent-sources">
+                    {searchAgentDetail.sources.slice(0, 3).map((source) => (
                       <button type="button" key={source} onClick={() => void window.velox.tabs.create(source)}>
                         {source}
                       </button>
                     ))}
                   </div>
                 )}
-                {searchAgentResult.next_actions.length > 0 && (
+                {searchAgentDetail.next_actions.length > 0 && (
                   <div className="assistant-suggestions">
-                    {searchAgentResult.next_actions.map((action) => (
-                      <button type="button" key={action} onClick={() => setSearchAgentInput(action)}>
+                    {searchAgentDetail.next_actions.map((action) => (
+                      <button type="button" key={action} disabled={searchAgentRunning} onClick={() => handleSearchAgentNextAction(action)}>
                         {action}
                       </button>
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+            {searchAgentSynthesis && (
+              <div className="search-agent-detail">
+                <div className="search-agent-card">
+                  <span>阶段性结论</span>
+                  <strong>{searchAgentSavedId ? `已保存 #${searchAgentSavedId}` : searchAgentSynthesis.provider}</strong>
+                </div>
+                <div className="assistant-message-content">{searchAgentSynthesis.answer}</div>
+                <div className="search-agent-actions search-agent-actions-single">
+                  <button type="button" disabled={searchAgentRunning} onClick={() => void exportSearchAgentReport()}>
+                    <Download size={13} />
+                    导出报告
+                  </button>
+                </div>
+                {searchAgentExportPath && (
+                  <p className="search-agent-export-path">已导出：{searchAgentExportPath}</p>
+                )}
+                {(searchAgentSynthesis.comparison_rows?.length ?? 0) > 0 && (
+                  <div className="search-agent-comparison">
+                    <div className="hibernated-heading">来源对比</div>
+                    {searchAgentSynthesis.comparison_rows?.map((row) => (
+                      <div className="search-agent-comparison-row" key={`${row.source}-${row.finding}`}>
+                        <button type="button" title={row.source} onClick={() => void window.velox.tabs.create(row.source)}>
+                          {row.title || row.source}
+                        </button>
+                        <dl>
+                          <div>
+                            <dt>发现</dt>
+                            <dd>{row.finding}</dd>
+                          </div>
+                          <div>
+                            <dt>证据</dt>
+                            <dd>{row.evidence}</dd>
+                          </div>
+                          <div>
+                            <dt>待核验</dt>
+                            <dd>{row.gaps}</dd>
+                          </div>
+                          <div>
+                            <dt>可信度</dt>
+                            <dd>{row.confidence}</dd>
+                          </div>
+                        </dl>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {searchAgentHistory.length > 0 && (
+              <div className="search-agent-history">
+                <div className="hibernated-heading">搜索记录</div>
+                {searchAgentHistory.map((record) => (
+                  <div className="search-agent-history-item" key={record.id}>
+                    <button className="search-agent-history-main" type="button" disabled={searchAgentRunning} onClick={() => void loadSearchAgentRun(record.id)}>
+                      <strong>{record.task}</strong>
+                      <span>{record.source_count} 个来源 · {record.updated_at.replace('T', ' ').slice(0, 16)}</span>
+                    </button>
+                    <button
+                      className="icon-button search-agent-history-delete"
+                      type="button"
+                      aria-label={`删除搜索记录 ${record.id}`}
+                      title="删除记录"
+                      disabled={searchAgentRunning}
+                      onClick={() => void deleteSearchAgentRun(record.id)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
           </section>
@@ -834,44 +1416,9 @@ function App() {
             )}
             {storageSummary && (
               <div className="storage-summary">
-                <span>快照 {storageSummary.snapshot_count}</span>
                 <span>整理 {storageSummary.organize_count}</span>
                 <span>休眠 {storageSummary.hibernated_count}</span>
-                <span>关闭 {storageSummary.closed_count}</span>
                 <span>工作区 {storageSummary.workspace_count}</span>
-              </div>
-            )}
-            {savedWorkspaces.length > 0 && (
-              <div className="hibernated-list">
-                <div className="hibernated-heading">已保存工作区</div>
-                {savedWorkspaces.map((item) => (
-                  <button className="hibernated-item" type="button" key={item.id} disabled={storageBusy} onClick={() => void loadWorkspace(item.id)}>
-                    <strong>{item.name}</strong>
-                    <span>{item.group_count} 组 · {item.duplicate_set_count} 组重复</span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {hibernatedTabs.length > 0 && (
-              <div className="hibernated-list">
-                <div className="hibernated-heading">最近休眠</div>
-                {hibernatedTabs.map((item) => (
-                  <button className="hibernated-item" type="button" key={item.id} disabled={storageBusy} onClick={() => void restoreHibernated(item.id)}>
-                    <strong>{item.title || item.url}</strong>
-                    <span>{item.reason} · 恢复</span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {closedTabs.length > 0 && (
-              <div className="hibernated-list">
-                <div className="hibernated-heading">最近关闭</div>
-                {closedTabs.map((item) => (
-                  <button className="hibernated-item" type="button" key={item.id} disabled={storageBusy} onClick={() => void restoreClosedTab(item.id)}>
-                    <strong>{item.title || item.url}</strong>
-                    <span>关闭恢复 · {item.reason}</span>
-                  </button>
-                ))}
               </div>
             )}
           </section>
@@ -995,12 +1542,24 @@ function App() {
               </button>
             </div>
             {savedWorkspaces.length > 0 ? (
-              <div className="hibernated-list">
+              <div className="workspace-list">
                 {savedWorkspaces.map((item) => (
-                  <button className="hibernated-item" type="button" key={item.id} disabled={storageBusy} onClick={() => void loadWorkspace(item.id)}>
-                    <strong>{item.name}</strong>
-                    <span>{item.group_count} 组 · {item.duplicate_set_count} 组重复 · {item.updated_at.replace('T', ' ').slice(0, 16)}</span>
-                  </button>
+                  <div className="workspace-item" key={item.id}>
+                    <button className="workspace-item-main" type="button" disabled={storageBusy} onClick={() => void loadWorkspace(item.id)}>
+                      <strong>{item.name}</strong>
+                      <span>{item.group_count} 组 · {item.updated_at.replace('T', ' ').slice(0, 16)}</span>
+                    </button>
+                    <button
+                      className="icon-button workspace-item-delete"
+                      type="button"
+                      aria-label={`删除工作区 ${item.name}`}
+                      title="删除工作区"
+                      disabled={storageBusy}
+                      onClick={() => void deleteWorkspace(item.id)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
                 ))}
               </div>
             ) : (
@@ -1012,18 +1571,68 @@ function App() {
             )}
           </section>
         )}
+        {historyOpen && (
+          <section className="workspace-panel">
+            <div className="panel-heading">
+              <div>
+                <strong>历史记录</strong>
+                <span>最近访问过的网页</span>
+              </div>
+              <button className="icon-button" type="button" aria-label="关闭历史记录" title="关闭" onClick={() => setHistoryOpen(false)}>
+                <X size={14} />
+              </button>
+            </div>
+            <div className="workspace-panel-summary">
+              <span>{browserHistory.length} 条最近历史</span>
+              <button type="button" onClick={() => void refreshStorageState()} disabled={storageBusy || backendState !== 'online'}>
+                刷新
+              </button>
+            </div>
+            {browserHistory.length > 0 ? (
+              <div className="workspace-list">
+                {browserHistory.map((item) => (
+                  <div className="workspace-item" key={item.id}>
+                    <button className="workspace-item-main" type="button" disabled={storageBusy} onClick={() => void openHistoryEntry(item.url)}>
+                      <strong>{item.title || item.url}</strong>
+                      <span>{item.visit_count} 次 · {item.last_visited_at.replace('T', ' ').slice(0, 16)}</span>
+                    </button>
+                    <button
+                      className="icon-button workspace-item-delete"
+                      type="button"
+                      aria-label={`删除历史记录 ${item.title || item.url}`}
+                      title="删除历史记录"
+                      disabled={storageBusy}
+                      onClick={() => void deleteHistoryEntry(item.id)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="workspace-empty">
+                <History size={18} />
+                <span>还没有历史记录</span>
+                <small>打开网页后，Velox 会自动记录最近访问。</small>
+              </div>
+            )}
+          </section>
+        )}
         <div className="sidebar-spacer" />
         <div className="sidebar-footer">
-          <button className={`footer-button ${searchAgentOpen ? 'selected' : ''}`} type="button" onClick={() => setSearchAgentOpen((open) => !open)}>
+          <button className={`footer-button ${searchAgentOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('search')}>
             <Search size={16} /><span>搜索代理</span>
           </button>
-          <button className={`footer-button ${organizeOpen ? 'selected' : ''}`} type="button" onClick={() => setOrganizeOpen((open) => !open)}>
+          <button className={`footer-button ${organizeOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('organize')}>
             <WandSparkles size={16} /><span>整理标签</span>
           </button>
-          <button className={`footer-button ${workspaceOpen ? 'selected' : ''}`} type="button" onClick={() => setWorkspaceOpen((open) => !open)}>
+          <button className={`footer-button ${workspaceOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('workspace')}>
             <LayoutPanelLeft size={16} /><span>工作区</span>
           </button>
-          <button className={`footer-button ${settingsOpen ? 'selected' : ''}`} type="button" onClick={() => setSettingsOpen((open) => !open)}>
+          <button className={`footer-button ${historyOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('history')}>
+            <History size={16} /><span>历史记录</span>
+          </button>
+          <button className={`footer-button ${settingsOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('settings')}>
             <Settings2 size={16} /><span>设置</span>
           </button>
         </div>
@@ -1053,7 +1662,7 @@ function App() {
         <section className={`start-page ${activeTab?.isStartPage ? '' : 'hidden'}`}>
           <div className="start-content">
             <div className="hero-icon"><Sparkles size={27} /></div>
-            <p className="eyebrow">AI-native browsing</p>
+            <p className="eyebrow">AI 原生浏览</p>
             <h1>让浏览更快一步</h1>
             <p className="hero-copy">Velox 会理解你的目标，帮你搜索、整理标签页，并把重复的网页操作变成可复用的工作流。</p>
             <form className="search-box" onSubmit={submitSearch}>

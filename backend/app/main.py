@@ -9,9 +9,15 @@ from pydantic import BaseModel, Field
 
 from backend.app.providers import AssistantContext, AssistantTab, LocalAIProvider, OpenAICompatibleProvider
 from backend.app.storage import (
+    delete_browser_history_entry,
+    delete_search_agent_run,
+    delete_workspace_snapshot,
+    get_search_agent_run,
     get_ai_settings,
+    list_browser_history,
     list_closed_tabs,
     list_hibernated_tabs,
+    list_search_agent_runs,
     get_workspace_snapshot,
     list_summary,
     list_workspace_snapshots,
@@ -19,9 +25,11 @@ from backend.app.storage import (
     restore_hibernated_tab,
     save_hibernated_tab,
     save_organize_run,
+    save_search_agent_run,
     save_closed_tab,
     save_workspace_snapshot,
     save_ai_settings,
+    save_browser_history_entry,
     save_tab_snapshot,
 )
 
@@ -100,6 +108,20 @@ class ClosedTabRecord(BaseModel):
     reason: str
     restored_at: str | None
     created_at: str
+
+
+class BrowserHistoryCreate(BaseModel):
+    url: str = Field(min_length=1, max_length=4000)
+    title: str = ""
+
+
+class BrowserHistoryRecord(BaseModel):
+    id: int
+    url: str
+    title: str
+    visit_count: int
+    first_visited_at: str
+    last_visited_at: str
 
 
 class WorkspaceSnapshotRecord(BaseModel):
@@ -206,11 +228,61 @@ class SearchAgentResultRequest(BaseModel):
     snapshot: DomSnapshotPayload
 
 
+class SearchAgentSourceRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=1000)
+    query: str
+    source_url: str
+    snapshot: DomSnapshotPayload
+
+
+class SearchAgentSourceNote(BaseModel):
+    url: str
+    title: str = ""
+    answer: str
+
+
+class SearchAgentSynthesizeRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=1000)
+    query: str
+    sources: list[SearchAgentSourceNote] = Field(default_factory=list)
+
+
+class SearchAgentComparisonRow(BaseModel):
+    source: str
+    title: str = ""
+    finding: str
+    evidence: str
+    gaps: str
+    confidence: str
+
+
 class SearchAgentResultResponse(BaseModel):
     answer: str
     sources: list[str]
     next_actions: list[str]
     provider: str
+    comparison_rows: list[SearchAgentComparisonRow] = Field(default_factory=list)
+
+
+class SearchAgentRunSaveRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=1000)
+    query: str
+    sources: list[SearchAgentSourceNote] = Field(default_factory=list)
+    synthesis: SearchAgentResultResponse
+
+
+class SearchAgentRunRecord(BaseModel):
+    id: int
+    task: str
+    query: str
+    source_count: int
+    created_at: str
+    updated_at: str
+
+
+class SearchAgentRunDetail(SearchAgentRunRecord):
+    sources: list[SearchAgentSourceNote] = Field(default_factory=list)
+    synthesis: SearchAgentResultResponse
 
 
 GROUP_RULES = (
@@ -244,6 +316,43 @@ def normalize_url(url: str) -> str:
 def compact_text(value: str, limit: int = 120) -> str:
     text = " ".join(value.replace("\n", " ").split())
     return text[:limit].rstrip()
+
+
+def build_comparison_rows(sources: list[SearchAgentSourceNote]) -> list[SearchAgentComparisonRow]:
+    rows: list[SearchAgentComparisonRow] = []
+    for note in sources[:8]:
+        answer = compact_text(note.answer, 900)
+        if not answer:
+            finding = "暂未提取到可用结论"
+            evidence = "来源正文为空或页面内容尚未加载完成。"
+        else:
+            sentences = [
+                sentence.strip(" ；;。")
+                for sentence in answer.replace("\n", "。").split("。")
+                if sentence.strip()
+            ]
+            finding = compact_text(sentences[0] if sentences else answer, 120)
+            evidence = compact_text("；".join(sentences[1:3]) if len(sentences) > 1 else answer, 160)
+        lowered = answer.lower()
+        weak_markers = ("暂时没有", "没有读取到", "需要等待", "登录", "核验", "可能", "not enough")
+        gaps = "需要继续核验发布时间、原始出处和至少一个独立来源。"
+        confidence = "中"
+        hostname = urlparse(note.url).hostname or ""
+        if any(marker in lowered for marker in weak_markers):
+            confidence = "低"
+            gaps = "当前来源证据不足，需要换来源或等待页面加载后复核。"
+        elif hostname.endswith((".gov", ".edu")) or any(marker in hostname.lower() for marker in ("docs.", "developer.", "official")):
+            confidence = "高"
+            gaps = "仍建议与另一个权威来源交叉验证。"
+        rows.append(SearchAgentComparisonRow(
+            source=note.url,
+            title=note.title,
+            finding=finding,
+            evidence=evidence,
+            gaps=gaps,
+            confidence=confidence,
+        ))
+    return rows
 
 
 def classify_tab(tab: TabSnapshot) -> str:
@@ -298,6 +407,63 @@ def summarize_search_snapshot(task: str, query: str, snapshot: DomSnapshotPayloa
         sources=sources,
         next_actions=["打开一个搜索结果并提取详情", "换一个关键词继续搜索", "用当前结果生成对比表"],
         provider="local-search-agent",
+    )
+
+
+def summarize_source_snapshot(
+    task: str,
+    query: str,
+    source_url: str,
+    snapshot: DomSnapshotPayload,
+) -> SearchAgentResultResponse:
+    page_text = compact_text(snapshot.text, 700)
+    links = [
+        element.href for element in snapshot.elements
+        if element.href and element.href.startswith(("http://", "https://"))
+    ]
+    unique_links = list(dict.fromkeys([source_url, snapshot.url, *links]))
+    answer_parts = [
+        f"已打开来源页面：{snapshot.title or source_url}",
+        f"原始任务：{task}",
+    ]
+    if page_text:
+        answer_parts.append(f"页面要点：{page_text}")
+    else:
+        answer_parts.append("这个来源暂时没有读取到足够正文，可能需要等待加载、登录，或换一个结果。")
+    return SearchAgentResultResponse(
+        answer="\n".join(answer_parts),
+        sources=[source for source in unique_links if source][:5],
+        next_actions=["返回搜索结果页", "打开下一个搜索结果", "根据该来源继续追问"],
+        provider="local-source-inspector",
+    )
+
+
+def synthesize_source_notes(request: SearchAgentSynthesizeRequest) -> SearchAgentResultResponse:
+    if not request.sources:
+        return SearchAgentResultResponse(
+            answer="还没有已分析的来源。请先打开一个搜索结果并提取详情。",
+            sources=[],
+            next_actions=["打开一个搜索结果并提取详情"],
+            provider="local-source-synthesizer",
+        )
+    source_lines = [
+        f"{index}. {note.title or note.url}\n   {compact_text(note.answer, 220)}"
+        for index, note in enumerate(request.sources[:5], 1)
+    ]
+    answer = (
+        f"任务：{request.task}\n"
+        f"搜索词：{request.query}\n"
+        f"已分析 {len(request.sources)} 个来源。\n"
+        "阶段性结论：\n"
+        + "\n".join(source_lines)
+        + "\n建议继续核验至少 2-3 个独立来源，再形成最终结论。"
+    )
+    return SearchAgentResultResponse(
+        answer=answer,
+        sources=list(dict.fromkeys(note.url for note in request.sources if note.url))[:8],
+        next_actions=["打开下一个搜索结果", "换一个关键词继续搜索", "用当前来源生成对比表"],
+        provider="local-source-synthesizer",
+        comparison_rows=build_comparison_rows(request.sources),
     )
 
 
@@ -454,6 +620,124 @@ async def summarize_search_agent(request: SearchAgentResultRequest) -> SearchAge
     return summarize_search_snapshot(request.task, request.query, request.snapshot)
 
 
+@app.post("/api/search-agent/inspect-source", response_model=SearchAgentResultResponse)
+async def inspect_search_source(request: SearchAgentSourceRequest) -> SearchAgentResultResponse:
+    settings = get_ai_settings()
+    if settings["mode"] == "external" and settings["base_url"] and settings["model"] and settings["api_key"]:
+        provider = OpenAICompatibleProvider(
+            base_url=settings["base_url"],
+            model=settings["model"],
+            api_key=settings["api_key"],
+        )
+        try:
+            reply = await provider.chat(
+                AssistantContext(
+                    message=(
+                        "请根据这个已打开的来源页面，提取与用户任务直接相关的信息。"
+                        "请说明哪些信息已经看到，哪些还需要继续核验。\n"
+                        f"用户任务：{request.task}\n搜索词：{request.query}\n来源：{request.source_url}"
+                    ),
+                    tabs=[
+                        AssistantTab(
+                            id=request.snapshot.tab_id,
+                            title=request.snapshot.title,
+                            url=request.snapshot.url,
+                            text=request.snapshot.text,
+                            is_start_page=False,
+                        )
+                    ],
+                    active_tab_id=request.snapshot.tab_id,
+                )
+            )
+            return SearchAgentResultResponse(
+                answer=reply.answer,
+                sources=[request.source_url, request.snapshot.url],
+                next_actions=reply.suggestions or ["打开下一个搜索结果"],
+                provider=reply.provider,
+            )
+        except RuntimeError:
+            return summarize_source_snapshot(request.task, request.query, request.source_url, request.snapshot)
+    return summarize_source_snapshot(request.task, request.query, request.source_url, request.snapshot)
+
+
+@app.post("/api/search-agent/synthesize", response_model=SearchAgentResultResponse)
+async def synthesize_search_sources(request: SearchAgentSynthesizeRequest) -> SearchAgentResultResponse:
+    settings = get_ai_settings()
+    if settings["mode"] == "external" and settings["base_url"] and settings["model"] and settings["api_key"] and request.sources:
+        provider = OpenAICompatibleProvider(
+            base_url=settings["base_url"],
+            model=settings["model"],
+            api_key=settings["api_key"],
+        )
+        source_context = "\n\n".join(
+            f"来源 {index}: {note.title or note.url}\nURL: {note.url}\n摘录: {compact_text(note.answer, 800)}"
+            for index, note in enumerate(request.sources[:6], 1)
+        )
+        try:
+            reply = await provider.chat(
+                AssistantContext(
+                    message=(
+                        "请基于这些已分析的网页来源，生成一个阶段性研究结论。"
+                        "请区分已经确认的信息、仍需核验的信息，并保留来源线索。\n"
+                        f"用户任务：{request.task}\n搜索词：{request.query}\n\n{source_context}"
+                    ),
+                    tabs=[
+                        AssistantTab(
+                            id=f"source-{index}",
+                            title=note.title or note.url,
+                            url=note.url,
+                            text=note.answer,
+                            is_start_page=False,
+                        )
+                        for index, note in enumerate(request.sources[:6], 1)
+                    ],
+                    active_tab_id="source-1",
+                )
+            )
+            return SearchAgentResultResponse(
+                answer=reply.answer,
+                sources=list(dict.fromkeys(note.url for note in request.sources if note.url))[:8],
+                next_actions=reply.suggestions or ["打开下一个搜索结果"],
+                provider=reply.provider,
+                comparison_rows=build_comparison_rows(request.sources),
+            )
+        except RuntimeError:
+            return synthesize_source_notes(request)
+    return synthesize_source_notes(request)
+
+
+@app.post("/api/storage/search-agent/runs", response_model=SearchAgentRunRecord)
+async def save_search_agent_run_endpoint(request: SearchAgentRunSaveRequest) -> SearchAgentRunRecord:
+    saved = save_search_agent_run(
+        task=request.task,
+        query=request.query,
+        sources=[source.model_dump() for source in request.sources],
+        synthesis=request.synthesis.model_dump(),
+    )
+    return SearchAgentRunRecord(**saved)
+
+
+@app.get("/api/storage/search-agent/runs", response_model=list[SearchAgentRunRecord])
+async def list_search_agent_runs_endpoint(limit: int = 12) -> list[SearchAgentRunRecord]:
+    return [SearchAgentRunRecord(**record) for record in list_search_agent_runs(limit)]
+
+
+@app.get("/api/storage/search-agent/runs/{record_id}", response_model=SearchAgentRunDetail)
+async def get_search_agent_run_endpoint(record_id: int) -> SearchAgentRunDetail:
+    record = get_search_agent_run(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Search agent run not found")
+    return SearchAgentRunDetail(**record)
+
+
+@app.delete("/api/storage/search-agent/runs/{record_id}")
+async def delete_search_agent_run_endpoint(record_id: int) -> dict[str, str | int]:
+    deleted = delete_search_agent_run(record_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Search agent run not found")
+    return {"status": "ok", "id": record_id}
+
+
 @app.get("/api/settings/ai", response_model=AISettingsResponse)
 async def get_ai_settings_endpoint() -> AISettingsResponse:
     settings = get_ai_settings()
@@ -540,6 +824,25 @@ async def restore_closed(record_id: int) -> ClosedTabRecord:
     return ClosedTabRecord(**record)
 
 
+@app.post("/api/storage/history", response_model=BrowserHistoryRecord)
+async def save_history_entry(request: BrowserHistoryCreate) -> BrowserHistoryRecord:
+    saved = save_browser_history_entry(request.url, request.title)
+    return BrowserHistoryRecord(**saved)
+
+
+@app.get("/api/storage/history", response_model=list[BrowserHistoryRecord])
+async def list_history(limit: int = 50) -> list[BrowserHistoryRecord]:
+    return [BrowserHistoryRecord(**record) for record in list_browser_history(limit)]
+
+
+@app.delete("/api/storage/history/{record_id}")
+async def delete_history(record_id: int) -> dict[str, str | int]:
+    deleted = delete_browser_history_entry(record_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="History entry not found")
+    return {"status": "ok", "id": record_id}
+
+
 @app.post("/api/storage/workspaces/save", response_model=WorkspaceSnapshotRecord)
 async def save_workspace(request: WorkspaceSnapshotCreate) -> WorkspaceSnapshotRecord:
     saved = save_workspace_snapshot(
@@ -569,6 +872,14 @@ async def get_workspace(record_id: int) -> WorkspaceSnapshotDetail:
     if record is None:
         raise HTTPException(status_code=404, detail="Workspace snapshot not found")
     return WorkspaceSnapshotDetail(**record)
+
+
+@app.delete("/api/storage/workspaces/{record_id}")
+async def delete_workspace(record_id: int) -> dict[str, str | int]:
+    deleted = delete_workspace_snapshot(record_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Workspace snapshot not found")
+    return {"status": "ok", "id": record_id}
 
 
 @app.get("/health")

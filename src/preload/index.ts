@@ -21,6 +21,8 @@ type StorageSummary = {
   hibernated_count: number
   closed_count: number
   workspace_count: number
+  search_agent_count?: number
+  history_count?: number
   latest_snapshot_at: string | null
   latest_closed_at: string | null
   latest_workspace: {
@@ -32,6 +34,11 @@ type StorageSummary = {
     created_at: string
     group_count: number
     duplicate_set_count: number
+  } | null
+  latest_history?: {
+    title: string
+    url: string
+    last_visited_at: string
   } | null
 }
 
@@ -45,6 +52,15 @@ type HibernatedTabRecord = {
   origin_batch_id: string | null
   restored_at: string | null
   created_at: string
+}
+
+type BrowserHistoryRecord = {
+  id: number
+  url: string
+  title: string
+  visit_count: number
+  first_visited_at: string
+  last_visited_at: string
 }
 
 type WorkspaceRecord = {
@@ -99,6 +115,11 @@ type DomSnapshot = {
   elements: DomElementInfo[]
 }
 
+type MarkdownExportPayload = {
+  defaultFilename: string
+  content: string
+}
+
 type BrowserAction =
   | { action: 'navigate'; params: { url: string } }
   | { action: 'search'; params: { query: string; engine?: 'google' | 'bing' | 'baidu' | 'duckduckgo' } }
@@ -114,6 +135,12 @@ type BrowserAction =
 
 contextBridge.exposeInMainWorld('velox', {
   getBackendConfig: () => ipcRenderer.invoke('backend:get-config') as Promise<{ baseUrl: string }>,
+  layout: {
+    setSidebarCollapsed: (collapsed: boolean) => ipcRenderer.invoke('layout:set-sidebar-collapsed', collapsed) as Promise<{ sidebarWidth: number }>
+  },
+  reports: {
+    exportMarkdown: (payload: MarkdownExportPayload) => ipcRenderer.invoke('reports:export-markdown', payload) as Promise<{ canceled: boolean; filePath: string | null }>
+  },
   search: {
     getEngine: () => ipcRenderer.invoke('search:get-engine') as Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>,
     setEngine: (engine: 'google' | 'bing' | 'baidu' | 'duckduckgo') => ipcRenderer.invoke('search:set-engine', engine) as Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>
@@ -156,9 +183,12 @@ contextBridge.exposeInMainWorld('velox', {
     restoreHibernated: (recordId: number) => ipcRenderer.invoke('storage:restore-hibernated', recordId) as Promise<HibernatedTabRecord>,
     listClosed: (limit?: number) => ipcRenderer.invoke('storage:list-closed', limit) as Promise<HibernatedTabRecord[]>,
     restoreClosed: (recordId: number) => ipcRenderer.invoke('storage:restore-closed', recordId) as Promise<HibernatedTabRecord>,
+    listHistory: (limit?: number) => ipcRenderer.invoke('storage:list-history', limit) as Promise<BrowserHistoryRecord[]>,
+    deleteHistory: (recordId: number) => ipcRenderer.invoke('storage:delete-history', recordId) as Promise<Record<string, unknown>>,
     listWorkspaces: (limit?: number) => ipcRenderer.invoke('storage:list-workspaces', limit) as Promise<WorkspaceRecord[]>,
     getWorkspace: (recordId: number) => ipcRenderer.invoke('storage:get-workspace', recordId) as Promise<WorkspaceRecord>,
     saveWorkspace: (payload: { name: string; snapshot: { groups: Array<{ name: string; description: string; tabs: string[] }>; duplicate_sets: string[][]; suggested_hibernating: string[]; strategy: string }; tabs: Array<{ id: string; url: string; title: string; text: string; is_start_page: boolean; group_name?: string | null }>; activeTabId: string | null }) => ipcRenderer.invoke('storage:save-workspace', payload) as Promise<WorkspaceRecord>,
+    deleteWorkspace: (recordId: number) => ipcRenderer.invoke('storage:delete-workspace', recordId) as Promise<Record<string, unknown>>,
     hibernateTab: (payload: { tab: TabSnapshot; reason: string; originBatchId?: string | null }) => ipcRenderer.invoke('storage:hibernate-tab', payload) as Promise<Record<string, unknown>>
   }
 })

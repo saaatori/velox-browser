@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, WebContentsView } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, session, WebContentsView, type MenuItemConstructorOptions } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -6,6 +6,7 @@ import { createServer } from 'node:net'
 
 const BACKEND_HOST = '127.0.0.1'
 const SIDEBAR_WIDTH = 248
+const SIDEBAR_COLLAPSED_WIDTH = 72
 const TOOLBAR_HEIGHT = 64
 const STATUSBAR_HEIGHT = 30
 const START_PAGE_URL = 'velox://new-tab'
@@ -15,6 +16,8 @@ const SEARCH_ENGINES = {
   baidu: 'https://www.baidu.com/s?wd=',
   duckduckgo: 'https://duckduckgo.com/?q='
 } as const
+
+app.setName('Velox 浏览器')
 type SearchEngine = keyof typeof SEARCH_ENGINES
 let searchEngine: SearchEngine = 'google'
 type StartupPage = 'velox' | 'custom'
@@ -54,6 +57,15 @@ type WorkspaceTab = {
   group_name?: string | null
 }
 
+type BrowserHistoryRecord = {
+  id: number
+  url: string
+  title: string
+  visit_count: number
+  first_visited_at: string
+  last_visited_at: string
+}
+
 type DomElementInfo = {
   id: string
   selector: string
@@ -82,6 +94,11 @@ type DomSnapshot = {
 
 type DomExtractionSchema = Record<string, string>
 
+type MarkdownExportPayload = {
+  defaultFilename: string
+  content: string
+}
+
 type BrowserAction =
   | { action: 'navigate'; params: { url: string } }
   | { action: 'search'; params: { query: string; engine?: SearchEngine } }
@@ -101,6 +118,7 @@ let mainWindow: BrowserWindow | null = null
 let tabs: BrowserTab[] = []
 let activeTabId: string | null = null
 let nextTabId = 1
+let sidebarWidth = SIDEBAR_WIDTH
 const closingTabIds = new Set<string>()
 
 function getPreferencesPath(): string {
@@ -249,9 +267,9 @@ function layoutTabViews(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const { width, height } = mainWindow.getContentBounds()
   const bounds = {
-    x: SIDEBAR_WIDTH,
+    x: sidebarWidth,
     y: TOOLBAR_HEIGHT,
-    width: Math.max(0, width - SIDEBAR_WIDTH),
+    width: Math.max(0, width - sidebarWidth),
     height: Math.max(0, height - TOOLBAR_HEIGHT - STATUSBAR_HEIGHT)
   }
   for (const tab of tabs) tab.view?.setBounds(bounds)
@@ -263,6 +281,27 @@ function updateTabState(tab: BrowserTab): void {
     tab.title = tab.view.webContents.getTitle() || tab.title
   }
   sendTabsState()
+}
+
+function shouldRecordHistoryUrl(url: string): boolean {
+  return url.startsWith('http://') || url.startsWith('https://')
+}
+
+async function recordHistoryForTab(tab: BrowserTab): Promise<void> {
+  if (!tab.view || tab.view.webContents.isDestroyed()) return
+  const url = tab.view.webContents.getURL() || tab.url
+  if (!shouldRecordHistoryUrl(url)) return
+  const title = tab.view.webContents.getTitle() || tab.title || url
+  try {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/history`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, title })
+    })
+    if (!response.ok) console.warn(`Failed to record history: ${response.status}`)
+  } catch (error) {
+    console.warn('Failed to record history', error)
+  }
 }
 
 function findTab(tabId: string): BrowserTab | undefined {
@@ -508,6 +547,10 @@ function attachViewEvents(tab: BrowserTab): void {
     tab.isLoading = false
     updateTabState(tab)
   })
+  contents.on('did-finish-load', () => {
+    updateTabState(tab)
+    void recordHistoryForTab(tab)
+  })
   contents.on('did-navigate', () => updateTabState(tab))
   contents.on('did-navigate-in-page', () => updateTabState(tab))
   contents.on('page-title-updated', (_event, title) => {
@@ -627,11 +670,101 @@ function closeTab(tabId: string): void {
   const [tab] = tabs.splice(index, 1)
   if (tab.view && !tab.view.webContents.isDestroyed()) {
     closingTabIds.add(tabId)
+    mainWindow?.contentView.removeChildView(tab.view)
     tab.view.webContents.close()
   }
   if (activeTabId === tabId) activeTabId = tabs[index]?.id ?? tabs[index - 1]?.id ?? null
   if (tabs.length === 0) createTab()
   else showActiveTab()
+}
+
+function createApplicationMenu(): void {
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: '文件',
+      submenu: [
+        {
+          label: '新建标签页',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => createTab(getNewTabUrl())
+        },
+        {
+          label: '关闭当前标签页',
+          accelerator: 'CmdOrCtrl+W',
+          click: () => {
+            if (activeTabId) closeTab(activeTabId)
+          }
+        },
+        { type: 'separator' },
+        { label: '退出 Velox', role: 'quit' }
+      ]
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { label: '撤销', role: 'undo' },
+        { label: '重做', role: 'redo' },
+        { type: 'separator' },
+        { label: '剪切', role: 'cut' },
+        { label: '复制', role: 'copy' },
+        { label: '粘贴', role: 'paste' },
+        { label: '全选', role: 'selectAll' }
+      ]
+    },
+    {
+      label: '查看',
+      submenu: [
+        {
+          label: '刷新当前页',
+          accelerator: 'CmdOrCtrl+R',
+          click: () => {
+            const tab = activeTabId ? findTab(activeTabId) : undefined
+            if (tab?.view) tab.view.webContents.reload()
+          }
+        },
+        {
+          label: '停止加载',
+          accelerator: 'Esc',
+          click: () => {
+            const tab = activeTabId ? findTab(activeTabId) : undefined
+            if (tab?.view) tab.view.webContents.stop()
+          }
+        },
+        { type: 'separator' },
+        { label: '放大', role: 'zoomIn' },
+        { label: '缩小', role: 'zoomOut' },
+        { label: '实际大小', role: 'resetZoom' },
+        { type: 'separator' },
+        { label: '开发者工具', role: 'toggleDevTools' },
+        { label: '全屏', role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: '窗口',
+      submenu: [
+        { label: '最小化', role: 'minimize' },
+        { label: '关闭窗口', role: 'close' }
+      ]
+    },
+    {
+      label: '帮助',
+      submenu: [
+        {
+          label: '关于 Velox 浏览器',
+          click: () => {
+            const options = {
+              type: 'info',
+              title: '关于 Velox 浏览器',
+              message: 'Velox 浏览器',
+              detail: 'AI 原生桌面浏览器'
+            } as const
+            void (mainWindow ? dialog.showMessageBox(mainWindow, options) : dialog.showMessageBox(options))
+          }
+        }
+      ]
+    }
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
 function navigateActiveTab(input: string): void {
@@ -678,7 +811,7 @@ function createWindow(): BrowserWindow {
     height: 900,
     minWidth: 1100,
     minHeight: 700,
-    title: 'Velox Browser',
+    title: 'Velox 浏览器',
     backgroundColor: '#0c1117',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -705,12 +838,36 @@ function createWindow(): BrowserWindow {
 
 app.whenReady().then(async () => {
   loadPreferences()
+  createApplicationMenu()
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(permission === 'notifications')
   })
 
   await startBackend()
   ipcMain.handle('backend:get-config', () => ({ baseUrl: getBackendBaseUrl() }))
+  ipcMain.handle('layout:set-sidebar-collapsed', (_event, collapsed: boolean) => {
+    sidebarWidth = collapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH
+    layoutTabViews()
+    return { sidebarWidth }
+  })
+  ipcMain.handle('reports:export-markdown', async (_event, payload: MarkdownExportPayload) => {
+    const filename = payload.defaultFilename.trim() || 'velox-search-agent-report.md'
+    const options = {
+      title: '导出搜索代理报告',
+      defaultPath: filename.toLowerCase().endsWith('.md') ? filename : `${filename}.md`,
+      filters: [
+        { name: 'Markdown', extensions: ['md'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    }
+    const result = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return { canceled: true, filePath: null }
+    const filePath = result.filePath.toLowerCase().endsWith('.md') ? result.filePath : `${result.filePath}.md`
+    writeFileSync(filePath, payload.content, 'utf8')
+    return { canceled: false, filePath }
+  })
   ipcMain.handle('search:get-engine', () => searchEngine)
   ipcMain.handle('search:set-engine', (_event, engine: SearchEngine) => {
     if (isSearchEngine(engine)) {
@@ -804,6 +961,22 @@ app.whenReady().then(async () => {
     if (record.url) createTab(record.url)
     return record
   })
+  ipcMain.handle('storage:list-history', async (_event, limit: number = 50) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/history?limit=${encodeURIComponent(String(limit))}`)
+    if (!response.ok) {
+      throw new Error(`Failed to load browser history: ${response.status}`)
+    }
+    return response.json() as Promise<BrowserHistoryRecord[]>
+  })
+  ipcMain.handle('storage:delete-history', async (_event, recordId: number) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/history/${recordId}`, {
+      method: 'DELETE'
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to delete browser history: ${response.status}`)
+    }
+    return response.json() as Promise<Record<string, unknown>>
+  })
   ipcMain.handle('storage:list-workspaces', async (_event, limit: number = 20) => {
     const response = await fetch(`${getBackendBaseUrl()}/api/storage/workspaces?limit=${encodeURIComponent(String(limit))}`)
     if (!response.ok) {
@@ -839,25 +1012,38 @@ app.whenReady().then(async () => {
     }
     return response.json() as Promise<Record<string, unknown>>
   })
+  ipcMain.handle('storage:delete-workspace', async (_event, recordId: number) => {
+    const response = await fetch(`${getBackendBaseUrl()}/api/storage/workspaces/${recordId}`, {
+      method: 'DELETE'
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to delete workspace: ${response.status}`)
+    }
+    return response.json() as Promise<Record<string, unknown>>
+  })
   ipcMain.handle('tabs:restore-workspace', (_event, payload: { tabs: WorkspaceTab[]; activeTabId: string | null }) => {
     restoreWorkspace(payload.tabs, payload.activeTabId)
   })
   ipcMain.handle('tabs:create', (_event, url?: string) => getTabState(createTab(url ? normalizeNavigationInput(url) : getNewTabUrl())))
   ipcMain.handle('tabs:activate', (_event, tabId: string) => activateTab(tabId))
   ipcMain.handle('tabs:close', async (_event, tabId: string, reason: string = 'manual') => {
-    const snapshot = (await getTabSnapshots()).find((item) => item.id === tabId)
-    if (snapshot && !snapshot.isStartPage) {
-      const response = await fetch(`${getBackendBaseUrl()}/api/storage/tabs/closed`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tab: snapshot,
-          reason
+    try {
+      const snapshot = (await getTabSnapshots()).find((item) => item.id === tabId)
+      if (snapshot && !snapshot.isStartPage) {
+        const response = await fetch(`${getBackendBaseUrl()}/api/storage/tabs/closed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tab: snapshot,
+            reason
+          })
         })
-      })
-      if (!response.ok) {
-        throw new Error(`Failed to store closed tab: ${response.status}`)
+        if (!response.ok) {
+          console.warn(`Failed to store closed tab: ${response.status}`)
+        }
       }
+    } catch (error) {
+      console.warn('Failed to store closed tab before closing', error)
     }
     closeTab(tabId)
   })
