@@ -126,6 +126,7 @@ function App() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [address, setAddress] = useState('')
   const [organizeOpen, setOrganizeOpen] = useState(false)
+  const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
   const [assistantInput, setAssistantInput] = useState('')
   const [assistantSending, setAssistantSending] = useState(false)
@@ -481,6 +482,7 @@ function App() {
         })
       }
       setWorkspaceName(workspace.name)
+      setWorkspaceOpen(false)
       setOrganizeOpen(true)
       await refreshStorageState()
     } finally {
@@ -787,12 +789,49 @@ function App() {
             </button>
           </section>
         )}
+        {workspaceOpen && (
+          <section className="workspace-panel">
+            <div className="panel-heading">
+              <div>
+                <strong>工作区</strong>
+                <span>恢复之前保存的标签页组合</span>
+              </div>
+              <button className="icon-button" type="button" aria-label="关闭工作区" title="关闭" onClick={() => setWorkspaceOpen(false)}>
+                <X size={14} />
+              </button>
+            </div>
+            <div className="workspace-panel-summary">
+              <span>{savedWorkspaces.length} 个最近工作区</span>
+              <button type="button" onClick={() => void refreshStorageState()} disabled={storageBusy || backendState !== 'online'}>
+                刷新
+              </button>
+            </div>
+            {savedWorkspaces.length > 0 ? (
+              <div className="hibernated-list">
+                {savedWorkspaces.map((item) => (
+                  <button className="hibernated-item" type="button" key={item.id} disabled={storageBusy} onClick={() => void loadWorkspace(item.id)}>
+                    <strong>{item.name}</strong>
+                    <span>{item.group_count} 组 · {item.duplicate_set_count} 组重复 · {item.updated_at.replace('T', ' ').slice(0, 16)}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="workspace-empty">
+                <LayoutPanelLeft size={18} />
+                <span>还没有保存的工作区</span>
+                <small>先打开“整理标签”，分析后即可保存当前标签组合。</small>
+              </div>
+            )}
+          </section>
+        )}
         <div className="sidebar-spacer" />
         <div className="sidebar-footer">
           <button className={`footer-button ${organizeOpen ? 'selected' : ''}`} type="button" onClick={() => setOrganizeOpen((open) => !open)}>
             <WandSparkles size={16} /><span>整理标签</span>
           </button>
-          <button className="footer-button" type="button"><LayoutPanelLeft size={16} /><span>工作区</span></button>
+          <button className={`footer-button ${workspaceOpen ? 'selected' : ''}`} type="button" onClick={() => setWorkspaceOpen((open) => !open)}>
+            <LayoutPanelLeft size={16} /><span>工作区</span>
+          </button>
           <button className={`footer-button ${settingsOpen ? 'selected' : ''}`} type="button" onClick={() => setSettingsOpen((open) => !open)}>
             <Settings2 size={16} /><span>设置</span>
           </button>

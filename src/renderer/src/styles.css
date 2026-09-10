@@ -31,7 +31,7 @@ kbd { margin-left: auto; color: #73828e; font-size: 10px; }
 .sidebar-footer { display: grid; gap: 3px; }
 .footer-button { min-height: 34px; padding: 0 9px; border-radius: 6px; font-size: 12px; }
 .footer-button.selected { color: #d7eeee; background: #1c3035; }
-.organize-panel { margin-top: 12px; padding: 11px 8px 10px; border: 1px solid #293a42; border-radius: 7px; background: #121d23; }
+.organize-panel, .workspace-panel { margin-top: 12px; padding: 11px 8px 10px; border: 1px solid #293a42; border-radius: 7px; background: #121d23; }
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
 .panel-heading strong, .panel-heading span { display: block; }
 .panel-heading strong { color: #dceeed; font-size: 12px; }
@@ -72,6 +72,13 @@ kbd { margin-left: auto; color: #73828e; font-size: 10px; }
 .hibernated-item span { color: #7f9098; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
 .hibernated-item:hover:not(:disabled) { background: #17242b; }
 .hibernated-item:disabled { cursor: default; opacity: 0.55; }
+.workspace-panel-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 11px; color: #9cb0b8; font-size: 10px; }
+.workspace-panel-summary button { padding: 3px 6px; border: 1px solid #36555a; border-radius: 4px; color: #a8d9d5; background: transparent; font-size: 9px; }
+.workspace-panel-summary button:hover:not(:disabled) { background: #1c3035; }
+.workspace-panel-summary button:disabled { cursor: default; opacity: .5; }
+.workspace-empty { display: grid; justify-items: center; gap: 7px; margin-top: 16px; padding: 12px 8px; border: 1px dashed #304149; border-radius: 5px; color: #78909a; text-align: center; }
+.workspace-empty span { color: #b0c2c6; font-size: 11px; }
+.workspace-empty small { color: #75868e; font-size: 10px; line-height: 1.5; }
 .workspace { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .topbar { display: flex; align-items: center; gap: 12px; height: 64px; padding: 0 18px; border-bottom: 1px solid #202a34; background: #111920; }
 .navigation-controls { display: flex; align-items: center; gap: 2px; }
