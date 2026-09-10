@@ -73,6 +73,45 @@ type WorkspaceRecord = {
   active_tab_id?: string | null
 }
 
+type DomElementInfo = {
+  id: string
+  selector: string
+  tagName: string
+  text: string
+  role: string | null
+  href: string | null
+  inputType: string | null
+  placeholder: string | null
+  ariaLabel: string | null
+  rect: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+}
+
+type DomSnapshot = {
+  tabId: string
+  url: string
+  title: string
+  text: string
+  elements: DomElementInfo[]
+}
+
+type BrowserAction =
+  | { action: 'navigate'; params: { url: string } }
+  | { action: 'search'; params: { query: string; engine?: 'google' | 'bing' | 'baidu' | 'duckduckgo' } }
+  | { action: 'back'; params?: Record<string, never> }
+  | { action: 'forward'; params?: Record<string, never> }
+  | { action: 'reload'; params?: Record<string, never> }
+  | { action: 'stop'; params?: Record<string, never> }
+  | { action: 'query'; params?: { selector?: string; limit?: number } }
+  | { action: 'extract'; params: { schema: Record<string, string> } }
+  | { action: 'click'; params: { selector: string } }
+  | { action: 'type'; params: { selector: string; text: string; replace?: boolean } }
+  | { action: 'scroll'; params?: { direction?: 'up' | 'down'; amount?: number } }
+
 interface Window {
   velox: {
     getBackendConfig: () => Promise<{ baseUrl: string }>
@@ -83,6 +122,14 @@ interface Window {
     startup: {
       getConfig: () => Promise<{ page: 'velox' | 'custom'; url: string }>
       setConfig: (payload: { page: 'velox' | 'custom'; url: string }) => Promise<{ page: 'velox' | 'custom'; url: string }>
+    }
+    dom: {
+      getSnapshot: () => Promise<DomSnapshot>
+      query: (payload?: { selector?: string; limit?: number }) => Promise<DomElementInfo[]>
+      extract: (schema: Record<string, string>) => Promise<Record<string, string | null>>
+    }
+    agent: {
+      executeAction: (action: BrowserAction) => Promise<Record<string, unknown>>
     }
     tabs: {
       getState: () => Promise<{ tabs: BrowserTabState[]; activeTabId: string | null }>

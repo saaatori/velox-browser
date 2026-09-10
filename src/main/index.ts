@@ -54,6 +54,47 @@ type WorkspaceTab = {
   group_name?: string | null
 }
 
+type DomElementInfo = {
+  id: string
+  selector: string
+  tagName: string
+  text: string
+  role: string | null
+  href: string | null
+  inputType: string | null
+  placeholder: string | null
+  ariaLabel: string | null
+  rect: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+}
+
+type DomSnapshot = {
+  tabId: string
+  url: string
+  title: string
+  text: string
+  elements: DomElementInfo[]
+}
+
+type DomExtractionSchema = Record<string, string>
+
+type BrowserAction =
+  | { action: 'navigate'; params: { url: string } }
+  | { action: 'search'; params: { query: string; engine?: SearchEngine } }
+  | { action: 'back'; params?: Record<string, never> }
+  | { action: 'forward'; params?: Record<string, never> }
+  | { action: 'reload'; params?: Record<string, never> }
+  | { action: 'stop'; params?: Record<string, never> }
+  | { action: 'query'; params?: { selector?: string; limit?: number } }
+  | { action: 'extract'; params: { schema: DomExtractionSchema } }
+  | { action: 'click'; params: { selector: string } }
+  | { action: 'type'; params: { selector: string; text: string; replace?: boolean } }
+  | { action: 'scroll'; params?: { direction?: 'up' | 'down'; amount?: number } }
+
 let backendProcess: ChildProcess | null = null
 let backendPort = 18765
 let mainWindow: BrowserWindow | null = null
@@ -228,12 +269,225 @@ function findTab(tabId: string): BrowserTab | undefined {
   return tabs.find((tab) => tab.id === tabId)
 }
 
+function getActiveWebTab(): BrowserTab {
+  const tab = activeTabId ? findTab(activeTabId) : undefined
+  if (!tab || tab.isStartPage || !tab.view || tab.view.webContents.isDestroyed()) {
+    throw new Error('当前没有可供 Agent 操作的网页标签')
+  }
+  return tab
+}
+
 function normalizeNavigationInput(input: string): string {
   const value = input.trim()
   if (!value) return START_PAGE_URL
   if (/^[a-z][a-z\d+.-]*:/i.test(value)) return value
   if (value.includes('.') && !/\s/.test(value)) return `https://${value}`
   return `${SEARCH_ENGINES[searchEngine]}${encodeURIComponent(value)}`
+}
+
+function getSearchUrl(query: string, engine = searchEngine): string {
+  return `${SEARCH_ENGINES[engine]}${encodeURIComponent(query.trim())}`
+}
+
+function buildDomQueryScript(selector = 'a, button, input, textarea, select, [role="button"], [role="link"], [contenteditable="true"]', limit = 80): string {
+  return `
+    (() => {
+      const selector = ${JSON.stringify(selector)};
+      const limit = ${JSON.stringify(limit)};
+      const cssPath = (element) => {
+        if (!(element instanceof Element)) return '';
+        const parts = [];
+        let current = element;
+        while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.documentElement) {
+          const tag = current.tagName.toLowerCase();
+          if (current.id) {
+            parts.unshift('#' + CSS.escape(current.id));
+            break;
+          }
+          const parent = current.parentElement;
+          if (!parent) {
+            parts.unshift(tag);
+            break;
+          }
+          const sameTagSiblings = Array.from(parent.children).filter((sibling) => sibling.tagName === current.tagName);
+          if (sameTagSiblings.length === 1) parts.unshift(tag);
+          else parts.unshift(tag + ':nth-of-type(' + (sameTagSiblings.indexOf(current) + 1) + ')');
+          current = parent;
+        }
+        return parts.join(' > ');
+      };
+      const labelFor = (element) => {
+        const value = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.value : '';
+        return (
+          element.getAttribute('aria-label') ||
+          element.getAttribute('title') ||
+          element.getAttribute('placeholder') ||
+          element.innerText ||
+          value ||
+          element.getAttribute('href') ||
+          ''
+        ).replace(/\\s+/g, ' ').trim();
+      };
+      const isVisible = (element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      return Array.from(document.querySelectorAll(selector))
+        .filter(isVisible)
+        .slice(0, limit)
+        .map((element, index) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            id: 'el-' + (index + 1),
+            selector: cssPath(element),
+            tagName: element.tagName.toLowerCase(),
+            text: labelFor(element).slice(0, 160),
+            role: element.getAttribute('role'),
+            href: element instanceof HTMLAnchorElement ? element.href : null,
+            inputType: element instanceof HTMLInputElement ? element.type : null,
+            placeholder: element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.placeholder : null,
+            ariaLabel: element.getAttribute('aria-label'),
+            rect: {
+              x: Math.round(rect.x),
+              y: Math.round(rect.y),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height)
+            }
+          };
+        });
+    })()
+  `
+}
+
+function buildDomExtractScript(schema: DomExtractionSchema): string {
+  return `
+    (() => {
+      const schema = ${JSON.stringify(schema)};
+      const readValue = (element) => {
+        if (!element) return null;
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+          return element.value;
+        }
+        if (element instanceof HTMLAnchorElement) {
+          return element.href || element.innerText.trim();
+        }
+        if (element instanceof HTMLImageElement) {
+          return element.currentSrc || element.src || element.alt;
+        }
+        return (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
+      };
+      return Object.fromEntries(
+        Object.entries(schema).map(([field, selector]) => [field, readValue(document.querySelector(selector))])
+      );
+    })()
+  `
+}
+
+async function queryActiveDom(selector?: string, limit?: number): Promise<DomElementInfo[]> {
+  const tab = getActiveWebTab()
+  return tab.view!.webContents.executeJavaScript(buildDomQueryScript(selector, limit), true) as Promise<DomElementInfo[]>
+}
+
+async function extractActiveDom(schema: DomExtractionSchema): Promise<Record<string, string | null>> {
+  const tab = getActiveWebTab()
+  return tab.view!.webContents.executeJavaScript(buildDomExtractScript(schema), true) as Promise<Record<string, string | null>>
+}
+
+async function getActiveDomSnapshot(): Promise<DomSnapshot> {
+  const tab = getActiveWebTab()
+  const [text, elements] = await Promise.all([
+    tab.view!.webContents.executeJavaScript(`document.body ? document.body.innerText.slice(0, 2000) : ''`, true) as Promise<string>,
+    queryActiveDom(undefined, 60)
+  ])
+  return {
+    tabId: tab.id,
+    url: tab.view!.webContents.getURL() || tab.url,
+    title: tab.view!.webContents.getTitle() || tab.title,
+    text,
+    elements
+  }
+}
+
+async function executeBrowserAction(action: BrowserAction): Promise<Record<string, unknown>> {
+  switch (action.action) {
+    case 'navigate':
+      navigateActiveTab(action.params.url)
+      return { status: 'ok', action: action.action }
+    case 'search':
+      if (!action.params.query.trim()) throw new Error('搜索内容不能为空')
+      if (action.params.engine && !isSearchEngine(action.params.engine)) throw new Error('无效的搜索引擎')
+      navigateActiveTab(getSearchUrl(action.params.query, action.params.engine))
+      return { status: 'ok', action: action.action, engine: action.params.engine ?? searchEngine }
+    case 'back': {
+      const tab = getActiveWebTab()
+      if (tab.view!.webContents.canGoBack()) tab.view!.webContents.goBack()
+      return { status: 'ok', action: action.action }
+    }
+    case 'forward': {
+      const tab = getActiveWebTab()
+      if (tab.view!.webContents.canGoForward()) tab.view!.webContents.goForward()
+      return { status: 'ok', action: action.action }
+    }
+    case 'reload': {
+      const tab = getActiveWebTab()
+      tab.view!.webContents.reload()
+      return { status: 'ok', action: action.action }
+    }
+    case 'stop': {
+      const tab = getActiveWebTab()
+      tab.view!.webContents.stop()
+      return { status: 'ok', action: action.action }
+    }
+    case 'query':
+      return { status: 'ok', action: action.action, elements: await queryActiveDom(action.params?.selector, action.params?.limit) }
+    case 'extract':
+      return { status: 'ok', action: action.action, data: await extractActiveDom(action.params.schema) }
+    case 'click': {
+      const tab = getActiveWebTab()
+      const clicked = await tab.view!.webContents.executeJavaScript(`
+        (() => {
+          const element = document.querySelector(${JSON.stringify(action.params.selector)});
+          if (!element) return false;
+          element.scrollIntoView({ block: 'center', inline: 'center' });
+          element.click();
+          return true;
+        })()
+      `, true) as boolean
+      if (!clicked) throw new Error(`未找到可点击元素：${action.params.selector}`)
+      return { status: 'ok', action: action.action }
+    }
+    case 'type': {
+      const tab = getActiveWebTab()
+      const typed = await tab.view!.webContents.executeJavaScript(`
+        (() => {
+          const element = document.querySelector(${JSON.stringify(action.params.selector)});
+          if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element.isContentEditable)) return false;
+          element.scrollIntoView({ block: 'center', inline: 'center' });
+          element.focus();
+          if (element.isContentEditable) {
+            if (${JSON.stringify(action.params.replace ?? true)}) element.textContent = '';
+            document.execCommand('insertText', false, ${JSON.stringify(action.params.text)});
+          } else {
+            if (${JSON.stringify(action.params.replace ?? true)}) element.value = ${JSON.stringify(action.params.text)};
+            else element.value += ${JSON.stringify(action.params.text)};
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          return true;
+        })()
+      `, true) as boolean
+      if (!typed) throw new Error(`未找到可输入元素：${action.params.selector}`)
+      return { status: 'ok', action: action.action }
+    }
+    case 'scroll': {
+      const tab = getActiveWebTab()
+      const direction = action.params?.direction ?? 'down'
+      const amount = action.params?.amount ?? 600
+      await tab.view!.webContents.executeJavaScript(`window.scrollBy({ top: ${direction === 'down' ? amount : -amount}, behavior: 'smooth' })`, true)
+      return { status: 'ok', action: action.action, direction, amount }
+    }
+  }
 }
 
 function showActiveTab(): void {
@@ -475,6 +729,12 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('tabs:get-state', () => ({ tabs: tabs.map(getTabState), activeTabId }))
   ipcMain.handle('tabs:get-snapshots', () => getTabSnapshots())
+  ipcMain.handle('dom:get-snapshot', () => getActiveDomSnapshot())
+  ipcMain.handle('dom:query', (_event, payload?: { selector?: string; limit?: number }) => {
+    return queryActiveDom(payload?.selector, payload?.limit)
+  })
+  ipcMain.handle('dom:extract', (_event, schema: DomExtractionSchema) => extractActiveDom(schema))
+  ipcMain.handle('agent:execute-action', (_event, action: BrowserAction) => executeBrowserAction(action))
   ipcMain.handle('storage:sync-tabs', async (_event, payload: { tabs: TabSnapshot[]; activeTabId: string | null }) => {
     const response = await fetch(`${getBackendBaseUrl()}/api/storage/tabs/snapshot`, {
       method: 'POST',

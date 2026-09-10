@@ -45,6 +45,20 @@ type AssistantMessage = {
   suggestions?: string[]
 }
 
+type SearchAgentPlan = {
+  query: string
+  engine: SearchEngine
+  rationale: string
+  action: BrowserAction
+}
+
+type SearchAgentResult = {
+  answer: string
+  sources: string[]
+  next_actions: string[]
+  provider: string
+}
+
 type AISettings = {
   mode: 'local' | 'external'
   base_url: string
@@ -142,6 +156,13 @@ function App() {
       content: '你好，我是 Velox 助手。我可以读取当前标签上下文，帮你总结页面、检查重复标签或给出休眠建议。'
     }
   ])
+  const [searchAgentOpen, setSearchAgentOpen] = useState(false)
+  const [searchAgentInput, setSearchAgentInput] = useState('')
+  const [searchAgentRunning, setSearchAgentRunning] = useState(false)
+  const [searchAgentError, setSearchAgentError] = useState('')
+  const [searchAgentStatus, setSearchAgentStatus] = useState('')
+  const [searchAgentPlan, setSearchAgentPlan] = useState<SearchAgentPlan | null>(null)
+  const [searchAgentResult, setSearchAgentResult] = useState<SearchAgentResult | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState('')
@@ -336,6 +357,16 @@ function App() {
     return tab.title || (tab.url ? '未命名页面' : '新标签页')
   }
 
+  async function waitForActivePageSettled(timeoutMs = 8000) {
+    const startedAt = Date.now()
+    while (Date.now() - startedAt < timeoutMs) {
+      const state = await window.velox.tabs.getState()
+      const active = state.tabs.find((tab) => tab.id === state.activeTabId)
+      if (active && !active.isStartPage && !active.isLoading) return
+      await new Promise((resolve) => setTimeout(resolve, 400))
+    }
+  }
+
   async function organizeTabs() {
     setOrganizeLoading(true)
     setOrganizeError('')
@@ -410,6 +441,52 @@ function App() {
       setAssistantError(error instanceof Error ? error.message : 'AI 助手暂时不可用')
     } finally {
       setAssistantSending(false)
+    }
+  }
+
+  async function runSearchAgent() {
+    const task = searchAgentInput.trim()
+    if (!task || searchAgentRunning) return
+    setSearchAgentRunning(true)
+    setSearchAgentError('')
+    setSearchAgentResult(null)
+    try {
+      const config = backendUrl ? { baseUrl: backendUrl } : await window.velox.getBackendConfig()
+      setSearchAgentStatus('规划搜索')
+      const planResponse = await fetch(`${config.baseUrl}/api/search-agent/plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task, engine: searchEngine })
+      })
+      if (!planResponse.ok) {
+        const detail = await planResponse.text()
+        throw new Error(detail || '搜索代理规划失败')
+      }
+      const plan = await planResponse.json() as SearchAgentPlan
+      setSearchAgentPlan(plan)
+      setSearchAgentStatus('执行搜索')
+      await window.velox.agent.executeAction(plan.action)
+      await waitForActivePageSettled()
+      setSearchAgentStatus('读取结果页')
+      const snapshot = await window.velox.dom.getSnapshot()
+      setSearchAgentStatus('生成摘要')
+      const resultResponse = await fetch(`${config.baseUrl}/api/search-agent/summarize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task, query: plan.query, snapshot })
+      })
+      if (!resultResponse.ok) {
+        const detail = await resultResponse.text()
+        throw new Error(detail || '搜索结果分析失败')
+      }
+      const result = await resultResponse.json() as SearchAgentResult
+      setSearchAgentResult(result)
+      setSearchAgentStatus('完成')
+    } catch (error) {
+      setSearchAgentError(error instanceof Error ? error.message : '搜索代理暂时不可用')
+      setSearchAgentStatus('')
+    } finally {
+      setSearchAgentRunning(false)
     }
   }
 
@@ -623,6 +700,62 @@ function App() {
                 <ArrowRight size={15} />
               </button>
             </form>
+          </section>
+        )}
+        {searchAgentOpen && (
+          <section className="search-agent-panel">
+            <div className="panel-heading">
+              <div>
+                <strong>AI 搜索代理</strong>
+                <span>{searchAgentRunning ? searchAgentStatus : '单轮搜索与结果观察'}</span>
+              </div>
+              <button className="icon-button" type="button" aria-label="关闭搜索代理" title="关闭" onClick={() => setSearchAgentOpen(false)}>
+                <X size={14} />
+              </button>
+            </div>
+            <form className="search-agent-form" onSubmit={(event) => { event.preventDefault(); void runSearchAgent() }}>
+              <textarea
+                value={searchAgentInput}
+                onChange={(event) => setSearchAgentInput(event.target.value)}
+                placeholder="例如：找 3 个适合 React 状态管理的轻量库"
+                aria-label="搜索代理任务"
+                disabled={searchAgentRunning}
+              />
+              <button type="submit" disabled={searchAgentRunning || !searchAgentInput.trim()}>
+                <Search size={14} />{searchAgentRunning ? '执行中' : '开始'}
+              </button>
+            </form>
+            {searchAgentError && <p className="search-agent-error">{searchAgentError}</p>}
+            {searchAgentPlan && (
+              <div className="search-agent-card">
+                <span>搜索词</span>
+                <strong>{searchAgentPlan.query}</strong>
+                <small>{searchAgentPlan.engine} · {searchAgentPlan.rationale}</small>
+              </div>
+            )}
+            {searchAgentResult && (
+              <div className="search-agent-result">
+                <div className="assistant-message-content">{searchAgentResult.answer}</div>
+                {searchAgentResult.sources.length > 0 && (
+                  <div className="search-agent-sources">
+                    {searchAgentResult.sources.slice(0, 4).map((source) => (
+                      <button type="button" key={source} onClick={() => void window.velox.tabs.create(source)}>
+                        {source}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {searchAgentResult.next_actions.length > 0 && (
+                  <div className="assistant-suggestions">
+                    {searchAgentResult.next_actions.map((action) => (
+                      <button type="button" key={action} onClick={() => setSearchAgentInput(action)}>
+                        {action}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </section>
         )}
         {organizeOpen && (
@@ -881,6 +1014,9 @@ function App() {
         )}
         <div className="sidebar-spacer" />
         <div className="sidebar-footer">
+          <button className={`footer-button ${searchAgentOpen ? 'selected' : ''}`} type="button" onClick={() => setSearchAgentOpen((open) => !open)}>
+            <Search size={16} /><span>搜索代理</span>
+          </button>
           <button className={`footer-button ${organizeOpen ? 'selected' : ''}`} type="button" onClick={() => setOrganizeOpen((open) => !open)}>
             <WandSparkles size={16} /><span>整理标签</span>
           </button>

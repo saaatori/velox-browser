@@ -162,6 +162,57 @@ class AISettingsResponse(BaseModel):
     updated_at: str | None
 
 
+class DomElementInfo(BaseModel):
+    id: str
+    selector: str
+    tag_name: str = Field(alias="tagName")
+    text: str
+    role: str | None = None
+    href: str | None = None
+    input_type: str | None = Field(default=None, alias="inputType")
+    placeholder: str | None = None
+    aria_label: str | None = Field(default=None, alias="ariaLabel")
+    rect: dict[str, float]
+
+
+class DomSnapshotPayload(BaseModel):
+    tab_id: str = Field(alias="tabId")
+    url: str
+    title: str
+    text: str
+    elements: list[DomElementInfo] = Field(default_factory=list)
+
+
+class BrowserActionPayload(BaseModel):
+    action: str
+    params: dict[str, object] = Field(default_factory=dict)
+
+
+class SearchAgentPlanRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=1000)
+    engine: str = "google"
+
+
+class SearchAgentPlanResponse(BaseModel):
+    query: str
+    engine: str
+    rationale: str
+    action: BrowserActionPayload
+
+
+class SearchAgentResultRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=1000)
+    query: str
+    snapshot: DomSnapshotPayload
+
+
+class SearchAgentResultResponse(BaseModel):
+    answer: str
+    sources: list[str]
+    next_actions: list[str]
+    provider: str
+
+
 GROUP_RULES = (
     ("开发与代码", ("github", "stackoverflow", "stack overflow", "npm", "pypi", "代码", "编程", "api", "sdk")),
     ("文档与学习", ("docs", "documentation", "教程", "指南", "课程", "学习", "reference", "文档")),
@@ -209,6 +260,45 @@ def describe_group(group_name: str, tabs: list[TabSnapshot]) -> str:
     if titles:
         return "、".join(titles[:2]) + (" 等页面" if len(titles) > 2 else "")
     return f"共 {len(tabs)} 个相关标签页"
+
+
+def build_search_query(task: str) -> str:
+    query = " ".join(task.replace("\n", " ").split())
+    prefixes = ("帮我", "请帮我", "搜索", "查找", "找一下", "帮我找", "search for", "find")
+    for prefix in prefixes:
+        if query.lower().startswith(prefix.lower()):
+            query = query[len(prefix):].strip(" ，,。")
+    return query[:160] or task.strip()[:160]
+
+
+def summarize_search_snapshot(task: str, query: str, snapshot: DomSnapshotPayload) -> SearchAgentResultResponse:
+    sources: list[str] = []
+    for element in snapshot.elements:
+        if element.href and element.href.startswith(("http://", "https://")) and element.href not in sources:
+            sources.append(element.href)
+        if len(sources) >= 5:
+            break
+    visible_items = [
+        element.text for element in snapshot.elements
+        if element.text and element.tag_name in {"a", "button"}
+    ][:6]
+    text_summary = compact_text(snapshot.text, 360)
+    answer_parts = [
+        f"已根据任务“{task}”搜索“{query}”。",
+        f"当前结果页标题：{snapshot.title or '未命名页面'}。",
+    ]
+    if visible_items:
+        answer_parts.append("页面上可见的主要结果包括：" + "；".join(visible_items) + "。")
+    elif text_summary:
+        answer_parts.append("页面摘要：" + text_summary)
+    else:
+        answer_parts.append("暂时没有读取到足够的结果页文本，可以等待页面加载完成后再分析。")
+    return SearchAgentResultResponse(
+        answer="\n".join(answer_parts),
+        sources=sources,
+        next_actions=["打开一个搜索结果并提取详情", "换一个关键词继续搜索", "用当前结果生成对比表"],
+        provider="local-search-agent",
+    )
 
 
 @app.post("/api/tabs/organize", response_model=OrganizeTabsResponse)
@@ -303,6 +393,65 @@ async def assistant_chat(request: AssistantRequest) -> AssistantResponse:
         provider=reply.provider,
         referenced_tab_ids=reply.referenced_tab_ids,
     )
+
+
+@app.post("/api/search-agent/plan", response_model=SearchAgentPlanResponse)
+async def plan_search_agent(request: SearchAgentPlanRequest) -> SearchAgentPlanResponse:
+    if request.engine not in {"google", "bing", "baidu", "duckduckgo"}:
+        raise HTTPException(status_code=400, detail="unsupported search engine")
+    query = build_search_query(request.task)
+    return SearchAgentPlanResponse(
+        query=query,
+        engine=request.engine,
+        rationale="先执行一次搜索并观察结果页，再决定是否需要打开具体来源。",
+        action=BrowserActionPayload(
+            action="search",
+            params={"query": query, "engine": request.engine},
+        ),
+    )
+
+
+@app.post("/api/search-agent/summarize", response_model=SearchAgentResultResponse)
+async def summarize_search_agent(request: SearchAgentResultRequest) -> SearchAgentResultResponse:
+    settings = get_ai_settings()
+    if settings["mode"] == "external" and settings["base_url"] and settings["model"] and settings["api_key"]:
+        provider = OpenAICompatibleProvider(
+            base_url=settings["base_url"],
+            model=settings["model"],
+            api_key=settings["api_key"],
+        )
+        try:
+            reply = await provider.chat(
+                AssistantContext(
+                    message=(
+                        "请根据当前搜索结果页，简洁总结已经看到的信息，列出可用来源，"
+                        "并说明下一步应该打开哪些结果继续核验。\n"
+                        f"用户任务：{request.task}\n搜索词：{request.query}"
+                    ),
+                    tabs=[
+                        AssistantTab(
+                            id=request.snapshot.tab_id,
+                            title=request.snapshot.title,
+                            url=request.snapshot.url,
+                            text=request.snapshot.text,
+                            is_start_page=False,
+                        )
+                    ],
+                    active_tab_id=request.snapshot.tab_id,
+                )
+            )
+            return SearchAgentResultResponse(
+                answer=reply.answer,
+                sources=[
+                    element.href for element in request.snapshot.elements
+                    if element.href and element.href.startswith(("http://", "https://"))
+                ][:5],
+                next_actions=reply.suggestions or ["打开一个搜索结果并提取详情"],
+                provider=reply.provider,
+            )
+        except RuntimeError:
+            return summarize_search_snapshot(request.task, request.query, request.snapshot)
+    return summarize_search_snapshot(request.task, request.query, request.snapshot)
 
 
 @app.get("/api/settings/ai", response_model=AISettingsResponse)

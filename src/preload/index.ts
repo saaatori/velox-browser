@@ -73,6 +73,45 @@ type WorkspaceRecord = {
   active_tab_id?: string | null
 }
 
+type DomElementInfo = {
+  id: string
+  selector: string
+  tagName: string
+  text: string
+  role: string | null
+  href: string | null
+  inputType: string | null
+  placeholder: string | null
+  ariaLabel: string | null
+  rect: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+}
+
+type DomSnapshot = {
+  tabId: string
+  url: string
+  title: string
+  text: string
+  elements: DomElementInfo[]
+}
+
+type BrowserAction =
+  | { action: 'navigate'; params: { url: string } }
+  | { action: 'search'; params: { query: string; engine?: 'google' | 'bing' | 'baidu' | 'duckduckgo' } }
+  | { action: 'back'; params?: Record<string, never> }
+  | { action: 'forward'; params?: Record<string, never> }
+  | { action: 'reload'; params?: Record<string, never> }
+  | { action: 'stop'; params?: Record<string, never> }
+  | { action: 'query'; params?: { selector?: string; limit?: number } }
+  | { action: 'extract'; params: { schema: Record<string, string> } }
+  | { action: 'click'; params: { selector: string } }
+  | { action: 'type'; params: { selector: string; text: string; replace?: boolean } }
+  | { action: 'scroll'; params?: { direction?: 'up' | 'down'; amount?: number } }
+
 contextBridge.exposeInMainWorld('velox', {
   getBackendConfig: () => ipcRenderer.invoke('backend:get-config') as Promise<{ baseUrl: string }>,
   search: {
@@ -82,6 +121,14 @@ contextBridge.exposeInMainWorld('velox', {
   startup: {
     getConfig: () => ipcRenderer.invoke('startup:get-config') as Promise<{ page: 'velox' | 'custom'; url: string }>,
     setConfig: (payload: { page: 'velox' | 'custom'; url: string }) => ipcRenderer.invoke('startup:set-config', payload) as Promise<{ page: 'velox' | 'custom'; url: string }>
+  },
+  dom: {
+    getSnapshot: () => ipcRenderer.invoke('dom:get-snapshot') as Promise<DomSnapshot>,
+    query: (payload?: { selector?: string; limit?: number }) => ipcRenderer.invoke('dom:query', payload) as Promise<DomElementInfo[]>,
+    extract: (schema: Record<string, string>) => ipcRenderer.invoke('dom:extract', schema) as Promise<Record<string, string | null>>
+  },
+  agent: {
+    executeAction: (action: BrowserAction) => ipcRenderer.invoke('agent:execute-action', action) as Promise<Record<string, unknown>>
   },
   tabs: {
     getState: () => ipcRenderer.invoke('tabs:get-state') as Promise<{ tabs: BrowserTabState[]; activeTabId: string | null }>,
