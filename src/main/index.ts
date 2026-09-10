@@ -9,6 +9,14 @@ const SIDEBAR_WIDTH = 248
 const TOOLBAR_HEIGHT = 64
 const STATUSBAR_HEIGHT = 30
 const START_PAGE_URL = 'velox://new-tab'
+const SEARCH_ENGINES = {
+  google: 'https://www.google.com/search?q=',
+  bing: 'https://www.bing.com/search?q=',
+  baidu: 'https://www.baidu.com/s?wd=',
+  duckduckgo: 'https://duckduckgo.com/?q='
+} as const
+type SearchEngine = keyof typeof SEARCH_ENGINES
+let searchEngine: SearchEngine = 'google'
 
 type BrowserTabState = {
   id: string
@@ -172,7 +180,7 @@ function normalizeNavigationInput(input: string): string {
   if (!value) return START_PAGE_URL
   if (/^[a-z][a-z\d+.-]*:/i.test(value)) return value
   if (value.includes('.') && !/\s/.test(value)) return `https://${value}`
-  return `https://www.google.com/search?q=${encodeURIComponent(value)}`
+  return `${SEARCH_ENGINES[searchEngine]}${encodeURIComponent(value)}`
 }
 
 function showActiveTab(): void {
@@ -395,6 +403,11 @@ app.whenReady().then(async () => {
 
   await startBackend()
   ipcMain.handle('backend:get-config', () => ({ baseUrl: getBackendBaseUrl() }))
+  ipcMain.handle('search:get-engine', () => searchEngine)
+  ipcMain.handle('search:set-engine', (_event, engine: SearchEngine) => {
+    if (engine in SEARCH_ENGINES) searchEngine = engine
+    return searchEngine
+  })
   ipcMain.handle('tabs:get-state', () => ({ tabs: tabs.map(getTabState), activeTabId }))
   ipcMain.handle('tabs:get-snapshots', () => getTabSnapshots())
   ipcMain.handle('storage:sync-tabs', async (_event, payload: { tabs: TabSnapshot[]; activeTabId: string | null }) => {

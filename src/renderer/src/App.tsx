@@ -17,6 +17,7 @@ import {
 
 type BackendState = 'checking' | 'online' | 'offline'
 type OrganizeStrategy = 'semantic' | 'domain'
+type SearchEngine = 'google' | 'bing' | 'baidu' | 'duckduckgo'
 
 type OrganizeResult = {
   groups: Array<{
@@ -125,6 +126,7 @@ function App() {
   const [tabs, setTabs] = useState<BrowserTabState[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [address, setAddress] = useState('')
+  const [searchEngine, setSearchEngine] = useState<SearchEngine>('google')
   const [organizeOpen, setOrganizeOpen] = useState(false)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
@@ -203,9 +205,10 @@ function App() {
 
     async function initialize() {
       try {
-        const [config, tabState] = await Promise.all([
+        const [config, tabState, currentSearchEngine] = await Promise.all([
           window.velox.getBackendConfig(),
-          window.velox.tabs.getState()
+          window.velox.tabs.getState(),
+          window.velox.search.getEngine()
         ])
         const response = await fetch(`${config.baseUrl}/health`)
         if (!response.ok) throw new Error('Backend health check failed')
@@ -214,6 +217,7 @@ function App() {
           setBackendState('online')
           setTabs(tabState.tabs)
           setActiveTabId(tabState.activeTabId)
+          setSearchEngine(currentSearchEngine)
         }
       } catch {
         if (!cancelled) setBackendState('offline')
@@ -752,6 +756,22 @@ function App() {
               >
                 <option value="local">本地模式</option>
                 <option value="external">外部模型</option>
+              </select>
+            </label>
+            <label className="settings-field">
+              <span>搜索引擎</span>
+              <select
+                value={searchEngine}
+                onChange={(event) => {
+                  const engine = event.target.value as SearchEngine
+                  setSearchEngine(engine)
+                  void window.velox.search.setEngine(engine)
+                }}
+              >
+                <option value="google">Google</option>
+                <option value="bing">Bing</option>
+                <option value="baidu">百度</option>
+                <option value="duckduckgo">DuckDuckGo</option>
               </select>
             </label>
             {aiSettings.mode === 'external' && (

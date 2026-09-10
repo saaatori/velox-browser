@@ -75,6 +75,10 @@ type WorkspaceRecord = {
 
 contextBridge.exposeInMainWorld('velox', {
   getBackendConfig: () => ipcRenderer.invoke('backend:get-config') as Promise<{ baseUrl: string }>,
+  search: {
+    getEngine: () => ipcRenderer.invoke('search:get-engine') as Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>,
+    setEngine: (engine: 'google' | 'bing' | 'baidu' | 'duckduckgo') => ipcRenderer.invoke('search:set-engine', engine) as Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>
+  },
   tabs: {
     getState: () => ipcRenderer.invoke('tabs:get-state') as Promise<{ tabs: BrowserTabState[]; activeTabId: string | null }>,
     getSnapshots: () => ipcRenderer.invoke('tabs:get-snapshots') as Promise<TabSnapshot[]>,

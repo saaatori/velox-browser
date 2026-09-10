@@ -9,7 +9,7 @@ npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 builder-effective-config.yaml
-.env
+.envnpm run dev
 .env.*
 !.env.example
 __pycache__/

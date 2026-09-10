@@ -76,6 +76,10 @@ type WorkspaceRecord = {
 interface Window {
   velox: {
     getBackendConfig: () => Promise<{ baseUrl: string }>
+    search: {
+      getEngine: () => Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>
+      setEngine: (engine: 'google' | 'bing' | 'baidu' | 'duckduckgo') => Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>
+    }
     tabs: {
       getState: () => Promise<{ tabs: BrowserTabState[]; activeTabId: string | null }>
       getSnapshots: () => Promise<TabSnapshot[]>
