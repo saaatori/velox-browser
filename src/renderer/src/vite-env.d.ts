@@ -80,6 +80,10 @@ interface Window {
       getEngine: () => Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>
       setEngine: (engine: 'google' | 'bing' | 'baidu' | 'duckduckgo') => Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>
     }
+    startup: {
+      getConfig: () => Promise<{ page: 'velox' | 'custom'; url: string }>
+      setConfig: (payload: { page: 'velox' | 'custom'; url: string }) => Promise<{ page: 'velox' | 'custom'; url: string }>
+    }
     tabs: {
       getState: () => Promise<{ tabs: BrowserTabState[]; activeTabId: string | null }>
       getSnapshots: () => Promise<TabSnapshot[]>

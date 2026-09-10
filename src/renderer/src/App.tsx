@@ -18,6 +18,7 @@ import {
 type BackendState = 'checking' | 'online' | 'offline'
 type OrganizeStrategy = 'semantic' | 'domain'
 type SearchEngine = 'google' | 'bing' | 'baidu' | 'duckduckgo'
+type StartupPage = 'velox' | 'custom'
 
 type OrganizeResult = {
   groups: Array<{
@@ -127,6 +128,8 @@ function App() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [address, setAddress] = useState('')
   const [searchEngine, setSearchEngine] = useState<SearchEngine>('google')
+  const [startupPage, setStartupPage] = useState<StartupPage>('velox')
+  const [startupUrl, setStartupUrl] = useState('')
   const [organizeOpen, setOrganizeOpen] = useState(false)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
@@ -205,10 +208,11 @@ function App() {
 
     async function initialize() {
       try {
-        const [config, tabState, currentSearchEngine] = await Promise.all([
+        const [config, tabState, currentSearchEngine, currentStartup] = await Promise.all([
           window.velox.getBackendConfig(),
           window.velox.tabs.getState(),
-          window.velox.search.getEngine()
+          window.velox.search.getEngine(),
+          window.velox.startup.getConfig()
         ])
         const response = await fetch(`${config.baseUrl}/health`)
         if (!response.ok) throw new Error('Backend health check failed')
@@ -218,6 +222,8 @@ function App() {
           setTabs(tabState.tabs)
           setActiveTabId(tabState.activeTabId)
           setSearchEngine(currentSearchEngine)
+          setStartupPage(currentStartup.page)
+          setStartupUrl(currentStartup.url)
         }
       } catch {
         if (!cancelled) setBackendState('offline')
@@ -774,6 +780,35 @@ function App() {
                 <option value="duckduckgo">DuckDuckGo</option>
               </select>
             </label>
+            <label className="settings-field">
+              <span>启动页</span>
+              <select
+                value={startupPage}
+                onChange={(event) => {
+                  const page = event.target.value as StartupPage
+                  setStartupPage(page)
+                  if (page === 'velox') {
+                    void window.velox.startup.setConfig({ page, url: '' })
+                  }
+                }}
+              >
+                <option value="velox">Velox 新标签页</option>
+                <option value="custom">自定义网址</option>
+              </select>
+            </label>
+            {startupPage === 'custom' && (
+              <label className="settings-field">
+                <span>启动网址</span>
+                <input
+                  value={startupUrl}
+                  onChange={(event) => setStartupUrl(event.target.value)}
+                  onBlur={() => {
+                    if (startupUrl.trim()) void window.velox.startup.setConfig({ page: 'custom', url: startupUrl })
+                  }}
+                  placeholder="例如 https://example.com"
+                />
+              </label>
+            )}
             {aiSettings.mode === 'external' && (
               <>
                 <label className="settings-field">

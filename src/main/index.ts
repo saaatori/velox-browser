@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, session, WebContentsView } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
 
@@ -17,6 +17,15 @@ const SEARCH_ENGINES = {
 } as const
 type SearchEngine = keyof typeof SEARCH_ENGINES
 let searchEngine: SearchEngine = 'google'
+type StartupPage = 'velox' | 'custom'
+let startupPage: StartupPage = 'velox'
+let startupUrl = ''
+
+type VeloxPreferences = {
+  searchEngine?: SearchEngine
+  startupPage?: StartupPage
+  startupUrl?: string
+}
 
 type BrowserTabState = {
   id: string
@@ -52,6 +61,50 @@ let tabs: BrowserTab[] = []
 let activeTabId: string | null = null
 let nextTabId = 1
 const closingTabIds = new Set<string>()
+
+function getPreferencesPath(): string {
+  return join(app.getPath('userData'), 'preferences.json')
+}
+
+function isSearchEngine(value: unknown): value is SearchEngine {
+  return typeof value === 'string' && value in SEARCH_ENGINES
+}
+
+function isStartupPage(value: unknown): value is StartupPage {
+  return value === 'velox' || value === 'custom'
+}
+
+function loadPreferences(): void {
+  try {
+    const preferences = JSON.parse(readFileSync(getPreferencesPath(), 'utf8')) as VeloxPreferences
+    if (isSearchEngine(preferences.searchEngine)) searchEngine = preferences.searchEngine
+    if (isStartupPage(preferences.startupPage)) startupPage = preferences.startupPage
+    if (typeof preferences.startupUrl === 'string') startupUrl = preferences.startupUrl
+  } catch {
+    // A missing or malformed preferences file falls back to defaults.
+  }
+}
+
+function savePreferences(): void {
+  const preferencesPath = getPreferencesPath()
+  mkdirSync(join(preferencesPath, '..'), { recursive: true })
+  writeFileSync(preferencesPath, `${JSON.stringify({ searchEngine, startupPage, startupUrl }, null, 2)}\n`, 'utf8')
+}
+
+function getNewTabUrl(): string {
+  return startupPage === 'custom' && startupUrl ? startupUrl : START_PAGE_URL
+}
+
+function normalizeStartupUrl(input: string): string {
+  const value = input.trim()
+  if (!value) throw new Error('启动网址不能为空')
+  const candidate = /^[a-z][a-z\d+.-]*:/i.test(value) ? value : `https://${value}`
+  const parsed = new URL(candidate)
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('启动网址只支持 HTTP 或 HTTPS')
+  }
+  return parsed.toString()
+}
 
 function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -245,7 +298,7 @@ function configureWebContentsView(tab: BrowserTab): void {
   })
 }
 
-function createTab(rawUrl = START_PAGE_URL, groupName: string | null = null, forcedId?: string): BrowserTab {
+function createTab(rawUrl = getNewTabUrl(), groupName: string | null = null, forcedId?: string): BrowserTab {
   const isStartPage = rawUrl === START_PAGE_URL
   if (forcedId) {
     const numericId = Number(forcedId.replace(/^tab-/, ''))
@@ -397,6 +450,7 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(async () => {
+  loadPreferences()
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(permission === 'notifications')
   })
@@ -405,8 +459,19 @@ app.whenReady().then(async () => {
   ipcMain.handle('backend:get-config', () => ({ baseUrl: getBackendBaseUrl() }))
   ipcMain.handle('search:get-engine', () => searchEngine)
   ipcMain.handle('search:set-engine', (_event, engine: SearchEngine) => {
-    if (engine in SEARCH_ENGINES) searchEngine = engine
+    if (isSearchEngine(engine)) {
+      searchEngine = engine
+      savePreferences()
+    }
     return searchEngine
+  })
+  ipcMain.handle('startup:get-config', () => ({ page: startupPage, url: startupUrl }))
+  ipcMain.handle('startup:set-config', (_event, payload: { page: StartupPage; url: string }) => {
+    if (!isStartupPage(payload.page)) throw new Error('无效的启动页类型')
+    startupPage = payload.page
+    startupUrl = payload.page === 'custom' ? normalizeStartupUrl(payload.url) : ''
+    savePreferences()
+    return { page: startupPage, url: startupUrl }
   })
   ipcMain.handle('tabs:get-state', () => ({ tabs: tabs.map(getTabState), activeTabId }))
   ipcMain.handle('tabs:get-snapshots', () => getTabSnapshots())
@@ -517,7 +582,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('tabs:restore-workspace', (_event, payload: { tabs: WorkspaceTab[]; activeTabId: string | null }) => {
     restoreWorkspace(payload.tabs, payload.activeTabId)
   })
-  ipcMain.handle('tabs:create', (_event, url?: string) => getTabState(createTab(normalizeNavigationInput(url ?? START_PAGE_URL))))
+  ipcMain.handle('tabs:create', (_event, url?: string) => getTabState(createTab(url ? normalizeNavigationInput(url) : getNewTabUrl())))
   ipcMain.handle('tabs:activate', (_event, tabId: string) => activateTab(tabId))
   ipcMain.handle('tabs:close', async (_event, tabId: string, reason: string = 'manual') => {
     const snapshot = (await getTabSnapshots()).find((item) => item.id === tabId)
@@ -582,7 +647,7 @@ app.whenReady().then(async () => {
     return response.json() as Promise<Record<string, unknown>>
   })
   createWindow()
-  createTab()
+  createTab(getNewTabUrl())
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

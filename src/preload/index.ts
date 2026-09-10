@@ -79,6 +79,10 @@ contextBridge.exposeInMainWorld('velox', {
     getEngine: () => ipcRenderer.invoke('search:get-engine') as Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>,
     setEngine: (engine: 'google' | 'bing' | 'baidu' | 'duckduckgo') => ipcRenderer.invoke('search:set-engine', engine) as Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>
   },
+  startup: {
+    getConfig: () => ipcRenderer.invoke('startup:get-config') as Promise<{ page: 'velox' | 'custom'; url: string }>,
+    setConfig: (payload: { page: 'velox' | 'custom'; url: string }) => ipcRenderer.invoke('startup:set-config', payload) as Promise<{ page: 'velox' | 'custom'; url: string }>
+  },
   tabs: {
     getState: () => ipcRenderer.invoke('tabs:get-state') as Promise<{ tabs: BrowserTabState[]; activeTabId: string | null }>,
     getSnapshots: () => ipcRenderer.invoke('tabs:get-snapshots') as Promise<TabSnapshot[]>,
