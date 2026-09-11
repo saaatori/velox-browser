@@ -1247,7 +1247,14 @@ function App() {
               <div className="tab-group" key={groupName}>
                 {tabGroups.length > 1 && <div className="tab-group-label">{groupName}</div>}
                 {groupTabs.map((tab) => (
-                  <div className={`tab-item ${tab.id === activeTabId ? 'active' : ''}`} key={tab.id}>
+                  <div
+                    className={`tab-item ${tab.id === activeTabId ? 'active' : ''}`}
+                    key={tab.id}
+                    onContextMenu={(event) => {
+                      event.preventDefault()
+                      void window.velox.tabs.showContextMenu(tab.id)
+                    }}
+                  >
                     <button className="tab-select" type="button" onClick={() => void window.velox.tabs.activate(tab.id)}>
                       <Globe2 size={16} />
                       <span>{tabLabel(tab)}</span>

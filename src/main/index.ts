@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, WebContentsView, type DownloadItem, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, session, shell, WebContentsView, type ContextMenuParams, type DownloadItem, type MenuItemConstructorOptions } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
@@ -622,6 +622,90 @@ async function executeBrowserAction(action: BrowserAction): Promise<Record<strin
   }
 }
 
+function showPageContextMenu(tab: BrowserTab, params: ContextMenuParams): void {
+  const groups: MenuItemConstructorOptions[][] = []
+  const linkUrl = params.linkURL || ''
+  const imageUrl = params.mediaType === 'image' ? params.srcURL : ''
+  const selectedText = params.selectionText.trim()
+
+  if (linkUrl) {
+    groups.push([
+      {
+        label: '在新标签页打开链接',
+        click: () => createTab(linkUrl)
+      },
+      {
+        label: '复制链接地址',
+        click: () => clipboard.writeText(linkUrl)
+      }
+    ])
+  }
+
+  if (imageUrl) {
+    groups.push([
+      {
+        label: '在新标签页打开图片',
+        click: () => createTab(imageUrl)
+      },
+      {
+        label: '复制图片地址',
+        click: () => clipboard.writeText(imageUrl)
+      }
+    ])
+  }
+
+  if (selectedText) {
+    groups.push([
+      {
+        label: '复制选中文本',
+        click: () => clipboard.writeText(selectedText)
+      },
+      {
+        label: `搜索“${selectedText.slice(0, 18)}${selectedText.length > 18 ? '...' : ''}”`,
+        click: () => createTab(getSearchUrl(selectedText))
+      }
+    ])
+  }
+
+  if (params.isEditable) {
+    groups.push([
+      { label: '撤销', role: 'undo' },
+      { label: '重做', role: 'redo' },
+      { label: '剪切', role: 'cut' },
+      { label: '复制', role: 'copy' },
+      { label: '粘贴', role: 'paste' },
+      { label: '全选', role: 'selectAll' }
+    ])
+  }
+
+  groups.push([
+    {
+      label: '后退',
+      enabled: tab.view?.webContents.canGoBack() ?? false,
+      click: () => tab.view?.webContents.goBack()
+    },
+    {
+      label: '前进',
+      enabled: tab.view?.webContents.canGoForward() ?? false,
+      click: () => tab.view?.webContents.goForward()
+    },
+    {
+      label: '刷新',
+      click: () => tab.view?.webContents.reload()
+    },
+    {
+      label: '复制当前网址',
+      enabled: Boolean(tab.url),
+      click: () => clipboard.writeText(tab.view?.webContents.getURL() || tab.url)
+    }
+  ])
+
+  const template = groups.flatMap((group, index) => (
+    index === 0 ? group : [{ type: 'separator' } as MenuItemConstructorOptions, ...group]
+  ))
+  Menu.buildFromTemplate(template).popup({ window: mainWindow ?? undefined })
+}
+
 function showActiveTab(): void {
   for (const tab of tabs) tab.view?.setVisible(tab.id === activeTabId)
   layoutTabViews()
@@ -632,6 +716,12 @@ function attachViewEvents(tab: BrowserTab): void {
   const contents = tab.view?.webContents
   if (!contents) return
 
+  contents.on('context-menu', (event, params) => {
+    event.preventDefault()
+    activeTabId = tab.id
+    showActiveTab()
+    showPageContextMenu(tab, params)
+  })
   contents.on('did-start-loading', () => {
     tab.isLoading = true
     updateTabState(tab)
@@ -771,6 +861,94 @@ function closeTab(tabId: string): void {
   else showActiveTab()
 }
 
+async function storeClosedTabRecord(tabId: string, reason: string): Promise<void> {
+  try {
+    const snapshot = (await getTabSnapshots()).find((item) => item.id === tabId)
+    if (snapshot && !snapshot.isStartPage) {
+      const response = await fetch(`${getBackendBaseUrl()}/api/storage/tabs/closed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tab: snapshot,
+          reason
+        })
+      })
+      if (!response.ok) {
+        console.warn(`Failed to store closed tab: ${response.status}`)
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to store closed tab before closing', error)
+  }
+}
+
+async function closeTabWithRecord(tabId: string, reason: string = 'manual'): Promise<void> {
+  await storeClosedTabRecord(tabId, reason)
+  closeTab(tabId)
+}
+
+async function closeTabsWithRecord(tabIds: string[], reason: string): Promise<void> {
+  for (const tabId of tabIds) {
+    if (findTab(tabId)) await closeTabWithRecord(tabId, reason)
+  }
+}
+
+function showTabContextMenu(tabId: string): void {
+  const tab = findTab(tabId)
+  if (!tab) return
+  activeTabId = tabId
+  showActiveTab()
+
+  const tabIndex = tabs.findIndex((item) => item.id === tabId)
+  const url = tab.view?.webContents.getURL() || tab.url
+  const tabsAfter = tabs.slice(tabIndex + 1).map((item) => item.id)
+  const otherTabs = tabs.filter((item) => item.id !== tabId).map((item) => item.id)
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: '切换到此标签页',
+      click: () => activateTab(tabId)
+    },
+    {
+      label: '新建标签页',
+      accelerator: 'CmdOrCtrl+T',
+      click: () => createTab(getNewTabUrl())
+    },
+    {
+      label: '复制标签页',
+      enabled: Boolean(url) || tab.isStartPage,
+      click: () => createTab(url || getNewTabUrl(), tab.groupName)
+    },
+    { type: 'separator' },
+    {
+      label: '复制当前网址',
+      enabled: Boolean(url),
+      click: () => clipboard.writeText(url)
+    },
+    {
+      label: '刷新此标签页',
+      enabled: Boolean(tab.view),
+      click: () => tab.view?.webContents.reload()
+    },
+    { type: 'separator' },
+    {
+      label: '关闭标签页',
+      accelerator: 'CmdOrCtrl+W',
+      click: () => void closeTabWithRecord(tabId, 'tab-context-close')
+    },
+    {
+      label: '关闭其他标签页',
+      enabled: otherTabs.length > 0,
+      click: () => void closeTabsWithRecord(otherTabs, 'tab-context-close-others')
+    },
+    {
+      label: '关闭右侧标签页',
+      enabled: tabsAfter.length > 0,
+      click: () => void closeTabsWithRecord(tabsAfter, 'tab-context-close-right')
+    }
+  ]
+  Menu.buildFromTemplate(template).popup({ window: mainWindow ?? undefined })
+}
+
 function createApplicationMenu(): void {
   const template: MenuItemConstructorOptions[] = [
     {
@@ -785,7 +963,7 @@ function createApplicationMenu(): void {
           label: '关闭当前标签页',
           accelerator: 'CmdOrCtrl+W',
           click: () => {
-            if (activeTabId) closeTab(activeTabId)
+            if (activeTabId) void closeTabWithRecord(activeTabId, 'menu-close')
           }
         },
         { type: 'separator' },
@@ -1174,26 +1352,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('tabs:create', (_event, url?: string) => getTabState(createTab(url ? normalizeNavigationInput(url) : getNewTabUrl())))
   ipcMain.handle('tabs:activate', (_event, tabId: string) => activateTab(tabId))
   ipcMain.handle('tabs:close', async (_event, tabId: string, reason: string = 'manual') => {
-    try {
-      const snapshot = (await getTabSnapshots()).find((item) => item.id === tabId)
-      if (snapshot && !snapshot.isStartPage) {
-        const response = await fetch(`${getBackendBaseUrl()}/api/storage/tabs/closed`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tab: snapshot,
-            reason
-          })
-        })
-        if (!response.ok) {
-          console.warn(`Failed to store closed tab: ${response.status}`)
-        }
-      }
-    } catch (error) {
-      console.warn('Failed to store closed tab before closing', error)
-    }
-    closeTab(tabId)
+    await closeTabWithRecord(tabId, reason)
   })
+  ipcMain.handle('tabs:show-context-menu', (_event, tabId: string) => showTabContextMenu(tabId))
   ipcMain.handle('tabs:navigate', (_event, input: string) => navigateActiveTab(input))
   ipcMain.handle('tabs:back', () => {
     const tab = activeTabId ? findTab(activeTabId) : undefined
