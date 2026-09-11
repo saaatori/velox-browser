@@ -134,6 +134,21 @@ type MarkdownExportPayload = {
   content: string
 }
 
+type DownloadStatus = 'progressing' | 'completed' | 'cancelled' | 'interrupted'
+
+type DownloadRecord = {
+  id: string
+  url: string
+  filename: string
+  savePath: string
+  receivedBytes: number
+  totalBytes: number
+  percent: number
+  status: DownloadStatus
+  startedAt: string
+  updatedAt: string
+}
+
 type BrowserAction =
   | { action: 'navigate'; params: { url: string } }
   | { action: 'search'; params: { query: string; engine?: 'google' | 'bing' | 'baidu' | 'duckduckgo' } }
@@ -154,6 +169,17 @@ contextBridge.exposeInMainWorld('velox', {
   },
   reports: {
     exportMarkdown: (payload: MarkdownExportPayload) => ipcRenderer.invoke('reports:export-markdown', payload) as Promise<{ canceled: boolean; filePath: string | null }>
+  },
+  downloads: {
+    list: () => ipcRenderer.invoke('downloads:list') as Promise<DownloadRecord[]>,
+    cancel: (downloadId: string) => ipcRenderer.invoke('downloads:cancel', downloadId) as Promise<void>,
+    remove: (downloadId: string) => ipcRenderer.invoke('downloads:remove', downloadId) as Promise<void>,
+    open: (downloadId: string) => ipcRenderer.invoke('downloads:open', downloadId) as Promise<void>,
+    onStateChange: (callback: (downloads: DownloadRecord[]) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, downloads: DownloadRecord[]) => callback(downloads)
+      ipcRenderer.on('downloads:state', listener)
+      return () => ipcRenderer.removeListener('downloads:state', listener)
+    }
   },
   search: {
     getEngine: () => ipcRenderer.invoke('search:get-engine') as Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>,

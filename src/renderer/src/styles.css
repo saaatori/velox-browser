@@ -96,6 +96,19 @@ kbd { margin-left: auto; color: #73828e; font-size: 10px; }
 .workspace-item-main:hover:not(:disabled), .workspace-item-delete:hover:not(:disabled) { background: #17242b; }
 .workspace-item-main:disabled, .workspace-item-delete:disabled { cursor: default; opacity: .55; }
 .workspace-item-delete { width: 28px; height: auto; border: 1px solid #293a42; background: #0f171c; }
+.download-list { display: grid; gap: 7px; margin-top: 9px; }
+.download-item { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 7px; align-items: stretch; padding: 8px; border: 1px solid #293a42; border-radius: 5px; background: #0f171c; }
+.download-item-main { display: grid; min-width: 0; gap: 4px; }
+.download-item-main strong, .download-item-main span, .download-item-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.download-item-main strong { color: #d4e2e1; font-size: 11px; }
+.download-item-main span, .download-item-main small { color: #7f9098; font-size: 10px; }
+.download-progress { overflow: hidden; height: 4px; border-radius: 2px; background: #22313a; }
+.download-progress span { display: block; height: 100%; border-radius: inherit; background: #56d4c6; transition: width .18s ease; }
+.download-actions { display: grid; grid-template-columns: minmax(0, 1fr) 26px; gap: 4px; align-content: center; align-items: center; }
+.download-actions button { min-height: 26px; padding: 0 7px; border: 1px solid #36555a; border-radius: 5px; color: #bfe8e5; background: #183237; font-size: 10px; }
+.download-actions button:hover { background: #204046; }
+.download-actions span { color: #7f9098; font-size: 10px; text-align: center; }
+.download-actions .download-remove { width: 26px; height: 26px; padding: 0; border-color: #293a42; color: #81919d; background: #0f171c; }
 .workspace-empty { display: grid; justify-items: center; gap: 7px; margin-top: 16px; padding: 12px 8px; border: 1px dashed #304149; border-radius: 5px; color: #78909a; text-align: center; }
 .workspace-empty span { color: #b0c2c6; font-size: 11px; }
 .workspace-empty small { color: #75868e; font-size: 10px; line-height: 1.5; }

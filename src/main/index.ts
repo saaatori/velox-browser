@@ -1,7 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, session, WebContentsView, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, WebContentsView, type DownloadItem, type MenuItemConstructorOptions } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import { createServer } from 'node:net'
 
 const BACKEND_HOST = '127.0.0.1'
@@ -74,6 +74,21 @@ type BookmarkRecord = {
   updated_at: string
 }
 
+type DownloadStatus = 'progressing' | 'completed' | 'cancelled' | 'interrupted'
+
+type DownloadRecord = {
+  id: string
+  url: string
+  filename: string
+  savePath: string
+  receivedBytes: number
+  totalBytes: number
+  percent: number
+  status: DownloadStatus
+  startedAt: string
+  updatedAt: string
+}
+
 type DomElementInfo = {
   id: string
   selector: string
@@ -127,6 +142,9 @@ let tabs: BrowserTab[] = []
 let activeTabId: string | null = null
 let nextTabId = 1
 let sidebarWidth = SIDEBAR_WIDTH
+let nextDownloadId = 1
+const downloads: DownloadRecord[] = []
+const activeDownloads = new Map<string, DownloadItem>()
 const closingTabIds = new Set<string>()
 
 function getPreferencesPath(): string {
@@ -156,6 +174,10 @@ function savePreferences(): void {
   const preferencesPath = getPreferencesPath()
   mkdirSync(join(preferencesPath, '..'), { recursive: true })
   writeFileSync(preferencesPath, `${JSON.stringify({ searchEngine, startupPage, startupUrl }, null, 2)}\n`, 'utf8')
+}
+
+function nowIso(): string {
+  return new Date().toISOString()
 }
 
 function getNewTabUrl(): string {
@@ -268,6 +290,69 @@ function sendTabsState(): void {
   mainWindow.webContents.send('tabs:state', {
     tabs: tabs.map(getTabState),
     activeTabId
+  })
+}
+
+function sendDownloadsState(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send('downloads:state', downloads)
+}
+
+function getUniqueDownloadPath(filename: string): string {
+  const downloadDir = app.getPath('downloads')
+  const safeFilename = basename(filename.trim() || 'download')
+  const extension = extname(safeFilename)
+  const name = extension ? safeFilename.slice(0, -extension.length) : safeFilename
+  let candidate = join(downloadDir, safeFilename)
+  let index = 1
+  while (existsSync(candidate)) {
+    candidate = join(downloadDir, `${name} (${index})${extension}`)
+    index += 1
+  }
+  return candidate
+}
+
+function registerDownloadHandling(): void {
+  session.defaultSession.on('will-download', (_event, item) => {
+    const id = `download-${nextDownloadId++}`
+    const startedAt = nowIso()
+    const filename = basename(item.getFilename() || 'download')
+    const savePath = getUniqueDownloadPath(filename)
+    item.setSavePath(savePath)
+    const record: DownloadRecord = {
+      id,
+      url: item.getURL(),
+      filename,
+      savePath,
+      receivedBytes: item.getReceivedBytes(),
+      totalBytes: item.getTotalBytes(),
+      percent: 0,
+      status: 'progressing',
+      startedAt,
+      updatedAt: startedAt
+    }
+    downloads.unshift(record)
+    activeDownloads.set(id, item)
+    sendDownloadsState()
+
+    const updateRecord = () => {
+      const totalBytes = item.getTotalBytes()
+      const receivedBytes = item.getReceivedBytes()
+      record.receivedBytes = receivedBytes
+      record.totalBytes = totalBytes
+      record.percent = totalBytes > 0 ? Math.round((receivedBytes / totalBytes) * 100) : 0
+      record.updatedAt = nowIso()
+      sendDownloadsState()
+    }
+
+    item.on('updated', updateRecord)
+    item.once('done', (_event, state) => {
+      updateRecord()
+      record.status = state === 'completed' ? 'completed' : state === 'cancelled' ? 'cancelled' : 'interrupted'
+      record.updatedAt = nowIso()
+      activeDownloads.delete(id)
+      sendDownloadsState()
+    })
   })
 }
 
@@ -850,6 +935,7 @@ app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(permission === 'notifications')
   })
+  registerDownloadHandling()
 
   await startBackend()
   ipcMain.handle('backend:get-config', () => ({ baseUrl: getBackendBaseUrl() }))
@@ -857,6 +943,25 @@ app.whenReady().then(async () => {
     sidebarWidth = collapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH
     layoutTabViews()
     return { sidebarWidth }
+  })
+  ipcMain.handle('downloads:list', () => downloads)
+  ipcMain.handle('downloads:cancel', (_event, downloadId: string) => {
+    const item = activeDownloads.get(downloadId)
+    if (item) item.cancel()
+  })
+  ipcMain.handle('downloads:remove', (_event, downloadId: string) => {
+    const item = activeDownloads.get(downloadId)
+    if (item) item.cancel()
+    activeDownloads.delete(downloadId)
+    const index = downloads.findIndex((download) => download.id === downloadId)
+    if (index >= 0) downloads.splice(index, 1)
+    sendDownloadsState()
+  })
+  ipcMain.handle('downloads:open', async (_event, downloadId: string) => {
+    const record = downloads.find((download) => download.id === downloadId)
+    if (!record || record.status !== 'completed') throw new Error('下载文件尚未完成')
+    const result = await shell.openPath(record.savePath)
+    if (result) throw new Error(result)
   })
   ipcMain.handle('reports:export-markdown', async (_event, payload: MarkdownExportPayload) => {
     const filename = payload.defaultFilename.trim() || 'velox-search-agent-report.md'

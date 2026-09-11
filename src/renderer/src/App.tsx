@@ -173,6 +173,21 @@ type BookmarkRecord = {
   updated_at: string
 }
 
+type DownloadStatus = 'progressing' | 'completed' | 'cancelled' | 'interrupted'
+
+type DownloadRecord = {
+  id: string
+  url: string
+  filename: string
+  savePath: string
+  receivedBytes: number
+  totalBytes: number
+  percent: number
+  status: DownloadStatus
+  startedAt: string
+  updatedAt: string
+}
+
 type WorkspaceRecord = {
   id: number
   name: string
@@ -211,6 +226,25 @@ function cleanReportFilename(value: string): string {
     .replace(/^-|-$/g, '')
     .slice(0, 70)
   return `${cleaned || 'search-agent-report'}.md`
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = value
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  return `${size >= 10 || unitIndex === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`
+}
+
+function downloadStatusLabel(status: DownloadStatus): string {
+  if (status === 'progressing') return '下载中'
+  if (status === 'completed') return '已完成'
+  if (status === 'cancelled') return '已取消'
+  return '已中断'
 }
 
 function buildSearchAgentReportMarkdown(payload: {
@@ -289,6 +323,7 @@ function App() {
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [bookmarksOpen, setBookmarksOpen] = useState(false)
+  const [downloadsOpen, setDownloadsOpen] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
   const [assistantInput, setAssistantInput] = useState('')
   const [assistantSending, setAssistantSending] = useState(false)
@@ -333,6 +368,7 @@ function App() {
   const [closedTabs, setClosedTabs] = useState<ClosedTabRecord[]>([])
   const [browserHistory, setBrowserHistory] = useState<BrowserHistoryRecord[]>([])
   const [bookmarks, setBookmarks] = useState<BookmarkRecord[]>([])
+  const [downloads, setDownloads] = useState<DownloadRecord[]>([])
   const [savedWorkspaces, setSavedWorkspaces] = useState<WorkspaceRecord[]>([])
   const [workspaceName, setWorkspaceName] = useState('')
   const [workspaceSaving, setWorkspaceSaving] = useState(false)
@@ -412,6 +448,22 @@ function App() {
     localStorage.setItem('velox.sidebarCollapsed', String(sidebarCollapsed))
     void window.velox.layout.setSidebarCollapsed(sidebarCollapsed)
   }, [sidebarCollapsed])
+
+  useEffect(() => {
+    let cancelled = false
+    void window.velox.downloads.list().then((items) => {
+      if (!cancelled) setDownloads(items)
+    }).catch(() => {
+      if (!cancelled) setDownloads([])
+    })
+    const unsubscribe = window.velox.downloads.onStateChange((items) => {
+      setDownloads(items)
+    })
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -558,18 +610,20 @@ function App() {
     }
   }
 
-  function toggleSidebarPanel(panel: 'search' | 'organize' | 'workspace' | 'history' | 'bookmarks' | 'settings') {
+  function toggleSidebarPanel(panel: 'search' | 'organize' | 'workspace' | 'history' | 'bookmarks' | 'downloads' | 'settings') {
     const nextSearch = panel === 'search' ? !searchAgentOpen : false
     const nextOrganize = panel === 'organize' ? !organizeOpen : false
     const nextWorkspace = panel === 'workspace' ? !workspaceOpen : false
     const nextHistory = panel === 'history' ? !historyOpen : false
     const nextBookmarks = panel === 'bookmarks' ? !bookmarksOpen : false
+    const nextDownloads = panel === 'downloads' ? !downloadsOpen : false
     const nextSettings = panel === 'settings' ? !settingsOpen : false
     setSearchAgentOpen(nextSearch)
     setOrganizeOpen(nextOrganize)
     setWorkspaceOpen(nextWorkspace)
     setHistoryOpen(nextHistory)
     setBookmarksOpen(nextBookmarks)
+    setDownloadsOpen(nextDownloads)
     setSettingsOpen(nextSettings)
     if ((nextWorkspace || nextHistory || nextBookmarks) && backendState === 'online') {
       void refreshStorageState()
@@ -1088,6 +1142,31 @@ function App() {
       window.alert(error instanceof Error ? error.message : '收藏删除失败')
     } finally {
       setStorageBusy(false)
+    }
+  }
+
+  async function openDownload(downloadId: string) {
+    try {
+      await window.velox.downloads.open(downloadId)
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '下载文件打开失败')
+    }
+  }
+
+  async function cancelDownload(downloadId: string) {
+    try {
+      await window.velox.downloads.cancel(downloadId)
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '下载取消失败')
+    }
+  }
+
+  async function removeDownload(downloadId: string) {
+    try {
+      await window.velox.downloads.remove(downloadId)
+      setDownloads((current) => current.filter((download) => download.id !== downloadId))
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '下载任务删除失败')
     }
   }
 
@@ -1731,6 +1810,69 @@ function App() {
             )}
           </section>
         )}
+        {downloadsOpen && (
+          <section className="workspace-panel">
+            <div className="panel-heading">
+              <div>
+                <strong>下载</strong>
+                <span>当前会话的下载任务</span>
+              </div>
+              <button className="icon-button" type="button" aria-label="关闭下载面板" title="关闭" onClick={() => setDownloadsOpen(false)}>
+                <X size={14} />
+              </button>
+            </div>
+            <div className="workspace-panel-summary">
+              <span>{downloads.length} 个下载任务</span>
+              <button type="button" onClick={() => void window.velox.downloads.list().then(setDownloads)} disabled={storageBusy}>
+                刷新
+              </button>
+            </div>
+            {downloads.length > 0 ? (
+              <div className="download-list">
+                {downloads.map((download) => (
+                  <div className="download-item" key={download.id}>
+                    <div className="download-item-main">
+                      <strong>{download.filename}</strong>
+                      <span>{downloadStatusLabel(download.status)} · {formatBytes(download.receivedBytes)} / {download.totalBytes > 0 ? formatBytes(download.totalBytes) : '未知大小'}</span>
+                      <div className="download-progress" aria-label={`下载进度 ${download.percent}%`}>
+                        <span style={{ width: `${download.status === 'completed' ? 100 : download.percent}%` }} />
+                      </div>
+                      <small title={download.savePath}>{download.savePath}</small>
+                    </div>
+                    <div className="download-actions">
+                      {download.status === 'completed' ? (
+                        <button type="button" onClick={() => void openDownload(download.id)}>
+                          打开
+                        </button>
+                      ) : download.status === 'progressing' ? (
+                        <button type="button" onClick={() => void cancelDownload(download.id)}>
+                          取消
+                        </button>
+                      ) : (
+                        <span>{downloadStatusLabel(download.status)}</span>
+                      )}
+                      <button
+                        className="icon-button download-remove"
+                        type="button"
+                        aria-label={`删除下载任务 ${download.filename}`}
+                        title="删除下载任务"
+                        onClick={() => void removeDownload(download.id)}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="workspace-empty">
+                <Download size={18} />
+                <span>还没有下载任务</span>
+                <small>网页触发下载后，会在这里显示进度和保存位置。</small>
+              </div>
+            )}
+          </section>
+        )}
         <div className="sidebar-spacer" />
         <div className="sidebar-footer">
           <button className={`footer-button ${searchAgentOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('search')}>
@@ -1747,6 +1889,9 @@ function App() {
           </button>
           <button className={`footer-button ${bookmarksOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('bookmarks')}>
             <Star size={16} /><span>收藏夹</span>
+          </button>
+          <button className={`footer-button ${downloadsOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('downloads')}>
+            <Download size={16} /><span>下载</span>
           </button>
           <button className={`footer-button ${settingsOpen ? 'selected' : ''}`} type="button" onClick={() => toggleSidebarPanel('settings')}>
             <Settings2 size={16} /><span>设置</span>

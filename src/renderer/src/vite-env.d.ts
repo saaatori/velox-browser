@@ -134,6 +134,21 @@ type MarkdownExportPayload = {
   content: string
 }
 
+type DownloadStatus = 'progressing' | 'completed' | 'cancelled' | 'interrupted'
+
+type DownloadRecord = {
+  id: string
+  url: string
+  filename: string
+  savePath: string
+  receivedBytes: number
+  totalBytes: number
+  percent: number
+  status: DownloadStatus
+  startedAt: string
+  updatedAt: string
+}
+
 type BrowserAction =
   | { action: 'navigate'; params: { url: string } }
   | { action: 'search'; params: { query: string; engine?: 'google' | 'bing' | 'baidu' | 'duckduckgo' } }
@@ -155,6 +170,13 @@ interface Window {
     }
     reports: {
       exportMarkdown: (payload: MarkdownExportPayload) => Promise<{ canceled: boolean; filePath: string | null }>
+    }
+    downloads: {
+      list: () => Promise<DownloadRecord[]>
+      cancel: (downloadId: string) => Promise<void>
+      remove: (downloadId: string) => Promise<void>
+      open: (downloadId: string) => Promise<void>
+      onStateChange: (callback: (downloads: DownloadRecord[]) => void) => () => void
     }
     search: {
       getEngine: () => Promise<'google' | 'bing' | 'baidu' | 'duckduckgo'>
